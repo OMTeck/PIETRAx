@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pietrax-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pietrax
+      POSTGRES_PASSWORD: pietrax_local_dev
+      POSTGRES_DB: pietrax
+    ports:
+      - "5433:5432"
+    volumes:
+      - pietrax_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pietrax -d pietrax"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pietrax_pgdata:

@@ -1,0 +1,674 @@
+// PIETRAx — Showroom content database (PostgreSQL)
+// Generator is selected at generate-time so the same schema can target
+// PostgreSQL in production. Local development uses the same provider.
+
+generator client {
+  provider        = "prisma-client-js"
+  binaryTargets   = ["native"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  ADMIN
+  CONTENT_EDITOR
+  SALES
+  VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+  PENDING // invited but has not yet set a password / activated
+}
+
+enum MaterialStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ProjectStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ImageKind {
+  MAIN
+  TEXTURE
+  SLAB
+  GALLERY
+  ROOM
+}
+
+enum SurfaceType {
+  FLOOR
+  WALL
+  FEATURE_WALL
+  COUNTERTOP
+  ISLAND
+  BACKSPLASH
+}
+
+enum RoomType {
+  KITCHEN
+  BATHROOM
+  LIVING_ROOM
+  BEDROOM
+  OFFICE
+  HOTEL_LOBBY
+  OUTDOOR
+}
+
+enum QuoteStatus {
+  NEW
+  CONTACTED
+  IN_PROGRESS
+  QUOTED
+  WON
+  LOST
+  ARCHIVED
+}
+
+enum MessageStatus {
+  NEW
+  READ
+  REPLIED
+  ARCHIVED
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+enum MediaKind {
+  IMAGE
+  TEXTURE
+  SLAB
+  PROJECT
+  ROOM
+  OTHER
+}
+
+enum Lang {
+  AR
+  EN
+}
+
+// ---------------------------------------------------------------------------
+// Administration
+// ---------------------------------------------------------------------------
+
+model AdminUser {
+  id             String                 @id @default(uuid())
+  email          String                 @unique
+  name           String
+  passwordHash   String?
+  role           Role                   @default(CONTENT_EDITOR)
+  status         UserStatus             @default(PENDING)
+  avatarUrl      String?
+  mfaEnabled     Boolean                @default(false)
+  mfaSecret      String? // TOTP base32 secret. Never returned to any client.
+  mfaVerifiedAt  DateTime?
+  lastLoginAt    DateTime?
+  passwordChangedAt DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  sessions       Session[]
+  recoveryCodes  RecoveryCode[]
+  resetTokens    PasswordResetToken[]
+  auditTrail     AuditLog[]
+  mediaUploads   MediaAsset[]
+  quoteHistory   QuoteStatusHistory[]
+
+  @@index([status])
+}
+
+model Session {
+  sid         String    @id
+  data        Json
+  userId      String?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  lastActiveAt DateTime @default(now())
+  expiresAt   DateTime
+  revokedAt   DateTime?
+
+  user        AdminUser? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  adminUserId String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user      AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  @@index([adminUserId])
+}
+
+model RecoveryCode {
+  id          String   @id @default(uuid())
+  adminUserId String
+  codeHash    String   @unique
+  usedAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  user        AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  @@index([adminUserId])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  timestamp   DateTime @default(now())
+  adminUserId String?
+  action      String
+  resourceType String?
+  resourceId  String?
+  metadata    Json?
+  ipAddress   String?
+  success     Boolean  @default(true)
+
+  adminUser   AdminUser? @relation(fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  @@index([timestamp(sort: Desc)])
+  @@index([adminUserId])
+  @@index([action])
+}
+
+// ---------------------------------------------------------------------------
+// Taxonomy
+// ---------------------------------------------------------------------------
+
+model MaterialType {
+  id        String @id @default(uuid())
+  code      String @unique // e.g. marble, ceramic, porcelain, granite, travertine, onyx
+  slug      String @unique
+  labelAr   String
+  labelEn   String
+  sortOrder Int    @default(0)
+  system    Boolean @default(false) // protected built-in taxonomy entry
+
+  materials Material[]
+}
+
+model Category {
+  id            String  @id @default(uuid())
+  code          String  @unique
+  slug          String  @unique
+  labelAr       String
+  labelEn       String
+  descriptionAr String?
+  descriptionEn String?
+  coverImage    String?
+  sortOrder     Int     @default(0)
+  system        Boolean @default(false)
+
+  materials     Material[]
+}
+
+model Color {
+  id          String  @id @default(uuid())
+  code        String  @unique // white, beige, grey, ...
+  labelAr     String
+  labelEn     String
+  swatchImage String?
+  sortOrder   Int     @default(0)
+  system      Boolean @default(false)
+
+  materials   Material[]
+}
+
+model Finish {
+  id        String  @id @default(uuid())
+  code      String  @unique // polished, honed, matt, glossy, textured
+  labelAr   String
+  labelEn   String
+  sortOrder Int     @default(0)
+  system    Boolean @default(false)
+
+  materials Material[]
+}
+
+model Size {
+  id             String  @id @default(uuid())
+  code           String  @unique // e.g. 60x60, slab
+  label          String
+  sortOrder      Int     @default(0)
+  system         Boolean @default(false)
+
+  materialSizes  MaterialSize[]
+}
+
+model Application {
+  id                  String  @id @default(uuid())
+  code                String  @unique // floor, wall, kitchen, ...
+  labelAr             String
+  labelEn             String
+  sortOrder           Int     @default(0)
+  system              Boolean @default(false)
+
+  materialApplications MaterialApplication[]
+}
+
+model ProjectType {
+  id        String  @id @default(uuid())
+  code      String  @unique // residential, commercial, ...
+  labelAr   String
+  labelEn   String
+  sortOrder Int     @default(0)
+  system    Boolean @default(false)
+
+  projects  Project[]
+}
+
+// ---------------------------------------------------------------------------
+// Materials / Products
+// ---------------------------------------------------------------------------
+
+model Material {
+  id            String         @id @default(uuid())
+  slug          String         @unique
+  sku           String?
+  materialTypeId String
+  categoryId    String?
+  colorId       String?
+  finishId      String?
+  origin        String?
+  thickness     String?
+  availability  Boolean        @default(true)
+  featured      Boolean        @default(false)
+  newArrival    Boolean        @default(false)
+  popular       Boolean        @default(false)
+  bookmatch     Boolean        @default(false)
+  technicalSpecs Json?
+  status        MaterialStatus @default(DRAFT)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  deletedAt     DateTime?
+
+  materialType  MaterialType   @relation(fields: [materialTypeId], references: [id])
+  category      Category?      @relation(fields: [categoryId], references: [id])
+  color         Color?         @relation(fields: [colorId], references: [id])
+  finish        Finish?        @relation(fields: [finishId], references: [id])
+
+  translations  MaterialTranslation[]
+  images        MaterialImage[]
+  sizes         MaterialSize[]
+  applications  MaterialApplication[]
+  collections   CollectionItem[]
+  projects      ProjectMaterial[]
+  visualizerConfigs VisualizerMaterialConfig[]
+  surfaces      VisualizerSurface[]
+  quoteItems    QuoteItem[]
+
+  @@index([materialTypeId])
+  @@index([status])
+  @@index([featured])
+  @@index([newArrival])
+  @@index([popular])
+}
+
+model MaterialTranslation {
+  id              String @id @default(uuid())
+  materialId      String
+  lang            Lang
+  name            String
+  shortDescription String?
+  longDescription String?
+  seoTitle        String?
+  seoDescription  String?
+  noIndex         Boolean @default(false)
+
+  material        Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@unique([materialId, lang])
+}
+
+model MaterialImage {
+  id         String   @id @default(uuid())
+  materialId String
+  kind       ImageKind
+  url        String
+  altAr      String?
+  altEn      String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  material   Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId])
+}
+
+model MaterialSize {
+  materialId String
+  sizeId     String
+
+  material   Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  size       Size     @relation(fields: [sizeId], references: [id], onDelete: Restrict)
+
+  @@id([materialId, sizeId])
+}
+
+model MaterialApplication {
+  materialId    String
+  applicationId String
+
+  material      Material    @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Restrict)
+
+  @@id([materialId, applicationId])
+}
+
+// ---------------------------------------------------------------------------
+// Collections
+// ---------------------------------------------------------------------------
+
+model Collection {
+  id            String    @id @default(uuid())
+  slug          String    @unique
+  coverImage    String?
+  featured      Boolean   @default(false)
+  displayOrder  Int       @default(0)
+  status        MaterialStatus @default(DRAFT)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  translations  CollectionTranslation[]
+  items         CollectionItem[]
+
+  @@index([status])
+  @@index([featured])
+}
+
+model CollectionTranslation {
+  id            String @id @default(uuid())
+  collectionId  String
+  lang          Lang
+  name          String
+  description   String?
+  seoTitle      String?
+  seoDescription String?
+  noIndex       Boolean @default(false)
+
+  collection    Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, lang])
+}
+
+model CollectionItem {
+  collectionId String
+  materialId   String
+
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  material     Material   @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@id([collectionId, materialId])
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+model Project {
+  id            String        @id @default(uuid())
+  slug          String        @unique
+  projectTypeId String
+  location      String?
+  coverImage    String?
+  completionDate DateTime?
+  featured      Boolean       @default(false)
+  status        ProjectStatus @default(DRAFT)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+
+  projectType   ProjectType   @relation(fields: [projectTypeId], references: [id])
+  translations  ProjectTranslation[]
+  images        ProjectImage[]
+  materials     ProjectMaterial[]
+
+  @@index([status])
+  @@index([featured])
+}
+
+model ProjectTranslation {
+  id            String  @id @default(uuid())
+  projectId     String
+  lang          Lang
+  title         String
+  shortDescription String?
+  seoTitle      String?
+  seoDescription String?
+  noIndex       Boolean @default(false)
+
+  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, lang])
+}
+
+model ProjectImage {
+  id         String   @id @default(uuid())
+  projectId  String
+  url        String
+  altAr      String?
+  altEn      String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model ProjectMaterial {
+  projectId  String
+  materialId String
+
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  material   Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, materialId])
+}
+
+// ---------------------------------------------------------------------------
+// Room Visualizer
+// ---------------------------------------------------------------------------
+
+model VisualizerRoom {
+  id            String   @id @default(uuid())
+  slug          String   @unique
+  roomType      RoomType
+  nameAr        String
+  nameEn        String
+  previewImage  String?
+  fullImage     String?
+  enabled       Boolean  @default(true)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  surfaces      VisualizerSurface[]
+
+  @@index([enabled])
+  @@index([sortOrder])
+}
+
+model VisualizerSurface {
+  id               String          @id @default(uuid())
+  roomId           String
+  surfaceType      SurfaceType
+  nameAr           String
+  nameEn           String
+  clipPath         String
+  enabled          Boolean         @default(true)
+  sortOrder        Int             @default(0)
+  defaultMaterialId String?
+
+  room             VisualizerRoom  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  defaultMaterial  Material?       @relation(fields: [defaultMaterialId], references: [id], onDelete: SetNull)
+
+  @@index([roomId])
+}
+
+model VisualizerMaterialConfig {
+  id            String   @id @default(uuid())
+  materialId    String   @unique
+  enabled       Boolean  @default(true)
+  textureUrl    String?
+  physicalScale Float?
+  patternScale  Float?
+  tileWidth     Float?
+  tileHeight    Float?
+  groutWidth    Float?
+  groutColor    String?
+  rotation      Float?
+  defaultZoom   Float?
+  bookmatch     Boolean  @default(false)
+  updatedAt     DateTime @updatedAt
+
+  material      Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Customers / leads
+// ---------------------------------------------------------------------------
+
+model QuoteRequest {
+  id           String   @id @default(uuid())
+  customerName String
+  phone        String?
+  email        String?
+  projectType  String?
+  message      String?
+  visualizerImage String?
+  source       String   @default("website")
+  status       QuoteStatus @default(NEW)
+  internalNotes String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  items        QuoteItem[]
+  history      QuoteStatusHistory[]
+
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
+
+model QuoteItem {
+  id         String       @id @default(uuid())
+  quoteId    String
+  materialId String?
+  name       String?
+  size       String?
+  quantity   Int          @default(1)
+
+  quote      QuoteRequest @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  material   Material?    @relation(fields: [materialId], references: [id], onDelete: SetNull)
+
+  @@index([quoteId])
+}
+
+model QuoteStatusHistory {
+  id          String   @id @default(uuid())
+  quoteId     String
+  fromStatus  QuoteStatus?
+  toStatus    QuoteStatus
+  note        String?
+  changedById String?
+  changedAt   DateTime @default(now())
+
+  quote       QuoteRequest @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  changedBy   AdminUser?   @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([quoteId])
+}
+
+model ContactMessage {
+  id          String        @id @default(uuid())
+  name        String
+  phone       String?
+  email       String?
+  projectType String?
+  message     String
+  status      MessageStatus @default(NEW)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
+
+model ShowroomBooking {
+  id                 String        @id @default(uuid())
+  name               String
+  phone              String?
+  email              String?
+  requestDate        DateTime?
+  requestedTime      String?
+  materialsOfInterest String?
+  status             BookingStatus @default(PENDING)
+  internalNotes      String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------------
+// Media + settings
+// ---------------------------------------------------------------------------
+
+model MediaAsset {
+  id        String   @id @default(uuid())
+  url       String   @unique
+  path      String
+  filename  String
+  kind      MediaKind @default(IMAGE)
+  mimeType  String?
+  sizeBytes Int?
+  width     Int?
+  height    Int?
+  altAr     String?
+  altEn     String?
+  createdById String?
+  createdAt DateTime @default(now())
+
+  createdBy AdminUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([createdById])
+  @@index([kind])
+}
+
+model SiteSetting {
+  id        String  @id @default(uuid())
+  key       String  @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedById String?
+
+  @@index([updatedById])
+}
