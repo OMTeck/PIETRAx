@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { RouteProvider, useRoute } from '@/context/RouteContext';
 import { LanguageProvider } from '@/context/LanguageContext';
 import { WishlistProvider } from '@/context/WishlistContext';
+import { CatalogProvider } from '@/context/CatalogContext';
 import { AdminAuthProvider } from '@/context/AdminAuthContext';
 import { ToastProvider } from '@/admin/ui';
 import { AdminApp } from '@/admin/AdminApp';
@@ -67,11 +68,13 @@ function App() {
     <LanguageProvider>
       <WishlistProvider>
         <RouteProvider>
-          <ToastProvider>
-            <AdminAuthProvider>
-              <AppContent />
-            </AdminAuthProvider>
-          </ToastProvider>
+          <CatalogProvider>
+            <ToastProvider>
+              <AdminAuthProvider>
+                <AppContent />
+              </AdminAuthProvider>
+            </ToastProvider>
+          </CatalogProvider>
         </RouteProvider>
       </WishlistProvider>
     </LanguageProvider>

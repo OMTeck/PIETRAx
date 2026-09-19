@@ -1,10 +1,9 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
 import { useWishlist } from '@/context/WishlistContext';
-import { materials } from '@/data/materials';
-import { rooms } from '@/data/content';
-import type { MaterialType, Colour } from '@/data/types';
+import { useCatalog } from '@/context/CatalogContext';
+import { pubMaterialName } from '@/lib/public';
 import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
   ArrowLeft, ArrowRight, Upload, X, ZoomIn, RotateCcw, Maximize2,
@@ -13,46 +12,99 @@ import {
 
 type Step = 'room' | 'surface' | 'material' | 'result';
 
+interface VisMaterial {
+  id: string;
+  slug: string;
+  name: string;
+  textureUrl: string;
+  typeCode: string;
+  typeLabel: string;
+  colourLabel: string;
+  finishLabel: string;
+  sizeLabel: string;
+}
+
 export function VisualizerPage() {
   const { t, lang } = useLang();
   const { navigate, path } = useRoute();
   const { toggle, has } = useWishlist();
+  const { visualizer, materialBySlug, loading } = useCatalog();
 
   const params = new URLSearchParams(path.split('?')[1] || '');
   const presetMaterialSlug = params.get('material');
 
+  const rooms = visualizer?.rooms ?? [];
+
+  const visMaterials: VisMaterial[] = useMemo(() => {
+    return (visualizer?.materials ?? []).map((vm) => {
+      const meta = materialBySlug(vm.slug);
+      return {
+        id: vm.id,
+        slug: vm.slug,
+        name: pubMaterialName(vm.translations, lang),
+        textureUrl: vm.textureUrl ?? '',
+        typeCode: meta?.materialType.code ?? '',
+        typeLabel: meta ? (lang === 'ar' ? meta.materialType.labelAr : meta.materialType.labelEn) : '',
+        colourLabel: meta?.color ? (lang === 'ar' ? meta.color.labelAr : meta.color.labelEn) : '',
+        finishLabel: meta?.finish ? (lang === 'ar' ? meta.finish.labelAr : meta.finish.labelEn) : '',
+        sizeLabel: meta?.sizes[0]?.label ?? '',
+      };
+    });
+  }, [visualizer, materialBySlug, lang]);
+
+  const categories = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const m of visMaterials) {
+      if (m.typeCode && !seen.has(m.typeCode)) seen.set(m.typeCode, m.typeLabel);
+    }
+    return [...seen.entries()].map(([code, label]) => ({ code, label }));
+  }, [visMaterials]);
+
   const [step, setStep] = useState<Step>('room');
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedSurfaceId, setSelectedSurfaceId] = useState<string | null>(null);
-  const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(
-    presetMaterialSlug ? materials.find((m) => m.slug === presetMaterialSlug)?.id || null : null
-  );
+  const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
   const [showCompare, setShowCompare] = useState(false);
   const [compareMaterialId, setCompareMaterialId] = useState<string | null>(null);
   const [uploadMode, setUploadMode] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [uploadSurface, setUploadSurface] = useState<string>('floor');
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterCategory, setFilterCategory] = useState<MaterialType | 'All'>('All');
+  const [filterCategory, setFilterCategory] = useState<string>('All');
   const [sliderPos, setSliderPos] = useState(50);
   const [zoom, setZoom] = useState(1);
   const [showSaved, setShowSaved] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    if (presetMaterialSlug && !selectedMaterialId) {
+      const match = visMaterials.find((m) => m.slug === presetMaterialSlug);
+      if (match) setSelectedMaterialId(match.id);
+    }
+  }, [presetMaterialSlug, visMaterials, selectedMaterialId]);
+
+  if (loading && rooms.length === 0) {
+    return (
+      <div className="pt-32 pb-20 min-h-screen bg-stone-100 text-center">
+        <p className="text-stone-500">{t('loading')}</p>
+      </div>
+    );
+  }
+
   const selectedRoom = rooms.find((r) => r.id === selectedRoomId);
   const selectedSurface = selectedRoom?.surfaces.find((s) => s.id === selectedSurfaceId);
-  const selectedMaterial = materials.find((m) => m.id === selectedMaterialId);
-  const compareMaterial = materials.find((m) => m.id === compareMaterialId);
+  const selectedMaterial = visMaterials.find((m) => m.id === selectedMaterialId);
+  const compareMaterial = visMaterials.find((m) => m.id === compareMaterialId);
 
   const filteredMaterials = useMemo(() => {
-    return materials.filter((m) => {
+    return visMaterials.filter((m) => {
       if (searchQuery && !m.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-      if (filterCategory !== 'All' && m.category !== filterCategory) return false;
+      if (filterCategory !== 'All' && m.typeCode !== filterCategory) return false;
       return true;
     });
-  }, [searchQuery, filterCategory]);
+  }, [searchQuery, filterCategory, visMaterials]);
 
-  const roomImage = uploadedImage || selectedRoom?.image || null;
+  const roomImage = uploadedImage || selectedRoom?.previewImage || null;
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -84,6 +136,10 @@ export function VisualizerPage() {
     { id: 'wall', name: 'Wall', nameAr: 'الجدار' },
     { id: 'countertop', name: 'Countertop', nameAr: 'الجزيرة' },
   ];
+
+  const surfaces = uploadMode
+    ? uploadSurfaces.map((s) => ({ id: s.id, clipPath: '', nameAr: s.nameAr, nameEn: s.name }))
+    : (selectedRoom?.surfaces ?? []).map((s) => ({ id: s.id, clipPath: s.clipPath, nameAr: s.nameAr, nameEn: s.nameEn }));
 
   const steps: Step[] = ['room', 'surface', 'material', 'result'];
   const currentStepIndex = steps.indexOf(step);
@@ -150,14 +206,14 @@ export function VisualizerPage() {
                   className="group relative block w-full overflow-hidden"
                 >
                   <LazyImage
-                    src={room.image}
-                    alt={lang === 'ar' ? room.nameAr : room.name}
+                    src={room.previewImage ?? ''}
+                    alt={lang === 'ar' ? room.nameAr : room.nameEn}
                     aspectClass="aspect-[4/3]"
                     className="transition-transform duration-500 group-hover:scale-105"
                   />
                   <div className="absolute inset-0 bg-stone-950/20 group-hover:bg-stone-950/40 transition-colors" />
                   <p className="absolute bottom-3 left-0 right-0 text-center text-sm tracking-[0.15em] uppercase text-white font-light">
-                    {lang === 'ar' ? room.nameAr : room.name}
+                    {lang === 'ar' ? room.nameAr : room.nameEn}
                   </p>
                 </button>
               </Reveal>
@@ -178,13 +234,12 @@ export function VisualizerPage() {
 
           <div className="relative aspect-[16/10] overflow-hidden bg-stone-200 mb-6">
             <img src={roomImage} alt="Room" className="w-full h-full object-cover" />
-            {/* Surface Overlays */}
-            {(uploadMode ? uploadSurfaces : selectedRoom?.surfaces || []).map((surface) => {
+            {surfaces.map((surface) => {
               const clip = uploadMode
                 ? surface.id === 'floor' ? 'polygon(0 55%, 100% 55%, 100% 100%, 0 100%)'
                   : surface.id === 'wall' ? 'polygon(0 0, 100% 0, 100% 55%, 0 55%)'
                   : 'polygon(0 40%, 100% 40%, 100% 60%, 0 60%)'
-                : (surface as { clipPath?: string }).clipPath || 'polygon(0 0, 100% 0, 100% 100%, 0 100%)';
+                : surface.clipPath || 'polygon(0 0, 100% 0, 100% 100%, 0 100%)';
               return (
                 <button
                   key={surface.id}
@@ -197,7 +252,7 @@ export function VisualizerPage() {
                 >
                   <div className="w-full h-full bg-accent/0 group-hover:bg-accent/30 transition-colors duration-300 flex items-center justify-center">
                     <span className="opacity-0 group-hover:opacity-100 transition-opacity text-white text-sm tracking-[0.15em] uppercase bg-stone-900/80 px-4 py-2">
-                      {lang === 'ar' ? surface.nameAr : surface.name}
+                      {lang === 'ar' ? surface.nameAr : surface.nameEn}
                     </span>
                   </div>
                 </button>
@@ -206,7 +261,7 @@ export function VisualizerPage() {
           </div>
 
           <div className="flex flex-wrap gap-3 justify-center">
-            {(uploadMode ? uploadSurfaces : selectedRoom?.surfaces || []).map((surface) => (
+            {surfaces.map((surface) => (
               <button
                 key={surface.id}
                 onClick={() => {
@@ -215,7 +270,7 @@ export function VisualizerPage() {
                 }}
                 className="filter-chip"
               >
-                {lang === 'ar' ? surface.nameAr : surface.name}
+                {lang === 'ar' ? surface.nameAr : surface.nameEn}
               </button>
             ))}
           </div>
@@ -241,17 +296,25 @@ export function VisualizerPage() {
               placeholder={t('searchMaterials')}
               className="flex-1 bg-ivory border border-stone-200 px-4 py-3 text-sm focus:border-stone-900 focus:outline-none"
             />
-            <div className="flex gap-2 overflow-x-auto scrollbar-hide">
-              {(['All', 'Marble', 'Porcelain', 'Ceramic', 'Granite', 'Travertine', 'Onyx'] as const).map((cat) => (
+            {categories.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto scrollbar-hide">
                 <button
-                  key={cat}
-                  onClick={() => setFilterCategory(cat)}
-                  className={`filter-chip shrink-0 ${filterCategory === cat ? 'filter-chip-active' : ''}`}
+                  onClick={() => setFilterCategory('All')}
+                  className={`filter-chip shrink-0 ${filterCategory === 'All' ? 'filter-chip-active' : ''}`}
                 >
-                  {cat === 'All' ? t('all') : cat}
+                  {t('all')}
                 </button>
-              ))}
-            </div>
+                {categories.map((c) => (
+                  <button
+                    key={c.code}
+                    onClick={() => setFilterCategory(c.code)}
+                    className={`filter-chip shrink-0 ${filterCategory === c.code ? 'filter-chip-active' : ''}`}
+                  >
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Material Grid */}
@@ -267,7 +330,7 @@ export function VisualizerPage() {
                   selectedMaterialId === m.id ? 'border-stone-900' : 'border-transparent hover:border-stone-300'
                 }`}
               >
-                <LazyImage src={m.textureImage} alt={m.name} aspectClass="aspect-square" className="transition-transform duration-300 group-hover:scale-110" />
+                <LazyImage src={m.textureUrl} alt={m.name} aspectClass="aspect-square" className="transition-transform duration-300 group-hover:scale-110" />
                 <div className="absolute bottom-0 left-0 right-0 p-2 bg-stone-950/60">
                   <p className="text-white text-xs font-light truncate">{m.name}</p>
                 </div>
@@ -307,7 +370,7 @@ export function VisualizerPage() {
               className="absolute inset-0 transition-all duration-500"
               style={{
                 clipPath: applySurfaceClip(selectedSurfaceId || 'floor'),
-                backgroundImage: `url(${selectedMaterial.textureImage})`,
+                backgroundImage: `url(${selectedMaterial.textureUrl})`,
                 backgroundSize: showCompare && sliderPos < 50 ? '0% 0%' : 'cover',
                 backgroundPosition: 'center',
                 mixBlendMode: 'multiply',
@@ -322,7 +385,7 @@ export function VisualizerPage() {
                   className="absolute inset-0"
                   style={{
                     clipPath: `polygon(0 0, ${sliderPos}% 0, ${sliderPos}% 100%, 0 100%)`,
-                    backgroundImage: `url(${compareMaterial?.textureImage || selectedMaterial.textureImage})`,
+                    backgroundImage: `url(${compareMaterial?.textureUrl || selectedMaterial.textureUrl})`,
                     backgroundSize: 'cover',
                     backgroundPosition: 'center',
                     mixBlendMode: 'multiply',
@@ -355,7 +418,7 @@ export function VisualizerPage() {
             {!showCompare && (
               <div className="absolute bottom-4 left-4 flex gap-2">
                 <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">
-                  {lang === 'ar' ? selectedSurface?.nameAr || selectedSurfaceId : selectedSurface?.name || selectedSurfaceId}
+                  {lang === 'ar' ? selectedSurface?.nameAr || selectedSurfaceId : selectedSurface?.nameEn || selectedSurfaceId}
                 </span>
               </div>
             )}
@@ -366,13 +429,13 @@ export function VisualizerPage() {
             <div className="mt-4">
               <p className="text-xs tracking-[0.15em] uppercase text-stone-500 mb-3">{t('compare')} A / B</p>
               <div className="flex gap-3 overflow-x-auto scrollbar-hide">
-                {materials.slice(0, 10).map((m) => (
+                {visMaterials.slice(0, 10).map((m) => (
                   <button
                     key={m.id}
                     onClick={() => setCompareMaterialId(m.id)}
                     className={`shrink-0 w-16 h-16 overflow-hidden border-2 ${compareMaterialId === m.id ? 'border-stone-900' : 'border-transparent'}`}
                   >
-                    <img src={m.textureImage} alt={m.name} className="w-full h-full object-cover" />
+                    <img src={m.textureUrl} alt={m.name} className="w-full h-full object-cover" />
                   </button>
                 ))}
               </div>
@@ -382,22 +445,22 @@ export function VisualizerPage() {
           {/* Selected Material Panel */}
           <div className="mt-8 bg-ivory p-6 md:p-8 border border-stone-200">
             <div className="flex flex-col md:flex-row gap-6 items-start">
-              <LazyImage src={selectedMaterial.textureImage} alt={selectedMaterial.name} aspectClass="w-24 h-24 shrink-0" />
+              <LazyImage src={selectedMaterial.textureUrl} alt={selectedMaterial.name} aspectClass="w-24 h-24 shrink-0" />
               <div className="flex-1">
                 <p className="text-xs tracking-[0.2em] uppercase text-stone-500 mb-1">{t('selectedMaterial')}</p>
                 <h3 className="font-display text-2xl font-light text-stone-900 mb-2">{selectedMaterial.name}</h3>
                 <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-stone-600">
-                  <span>{selectedMaterial.category}</span>
-                  <span>· {selectedMaterial.colour}</span>
-                  <span>· {selectedMaterial.finish}</span>
-                  <span>· {selectedMaterial.sizes[0]}</span>
+                  {selectedMaterial.typeLabel && <span>{selectedMaterial.typeLabel}</span>}
+                  {selectedMaterial.colourLabel && <span>· {selectedMaterial.colourLabel}</span>}
+                  {selectedMaterial.finishLabel && <span>· {selectedMaterial.finishLabel}</span>}
+                  {selectedMaterial.sizeLabel && <span>· {selectedMaterial.sizeLabel}</span>}
                 </div>
               </div>
               <div className="flex flex-col gap-2 w-full md:w-auto">
                 <button onClick={() => navigate(`/material/${selectedMaterial.slug}`)} className="btn-outline text-xs">
                   {t('viewDetails')}
                 </button>
-                <button onClick={() => navigate('/contact')} className="btn-primary text-xs">
+                <button onClick={() => navigate(`/material/${selectedMaterial.slug}`)} className="btn-primary text-xs">
                   {t('requestQuote')}
                 </button>
               </div>

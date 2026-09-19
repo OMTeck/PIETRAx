@@ -1,21 +1,53 @@
 import { useState } from 'react';
 import { useLang } from '@/context/LanguageContext';
+import { publicApi } from '@/lib/public';
 import { Reveal } from '@/components/ui/Reveal';
-import { MapPin, Phone, Mail, MessageCircle, Clock, Check } from 'lucide-react';
+import { MapPin, Phone, Mail, MessageCircle, Clock, Check, Loader2 } from 'lucide-react';
 
 export function ContactPage() {
   const { t } = useLang();
   const [formType, setFormType] = useState<'message' | 'booking'>('message');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setSubmitted(true);
-    setTimeout(() => setSubmitted(false), 4000);
+    const data = new FormData(e.currentTarget);
+    const name = String(data.get('name') ?? '');
+    const phone = String(data.get('phone') ?? '');
+    const email = String(data.get('email') ?? '');
+    setError(null);
+    setSubmitting(true);
+    try {
+      if (formType === 'message') {
+        await publicApi.submitMessage({
+          name,
+          phone: phone || undefined,
+          email: email || undefined,
+          projectType: (String(data.get('projectType') ?? '')) || undefined,
+          message: String(data.get('message') ?? ''),
+        });
+      } else {
+        await publicApi.submitBooking({
+          name,
+          phone: phone || undefined,
+          email: email || undefined,
+          date: String(data.get('date') ?? '') || undefined,
+          time: String(data.get('time') ?? '') || undefined,
+          materialsOfInterest: (String(data.get('materials') ?? '')) || undefined,
+        });
+      }
+      setSubmitted(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Submission failed.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
-    <div className="pt-24 md:pt-32 pb-20">
+    <div className="pt-20 md:pt-24 pb-20">
       <div className="container-lux mb-12">
         <Reveal>
           <h1 className="font-display text-display font-light text-stone-900 mb-2">{t('contactTitle')}</h1>
@@ -64,13 +96,13 @@ export function ContactPage() {
           {/* Toggle */}
           <div className="flex gap-2 mb-8 justify-center">
             <button
-              onClick={() => setFormType('message')}
+              onClick={() => { setFormType('message'); setError(null); }}
               className={`filter-chip ${formType === 'message' ? 'filter-chip-active' : ''}`}
             >
               {t('contact')}
             </button>
             <button
-              onClick={() => setFormType('booking')}
+              onClick={() => { setFormType('booking'); setError(null); }}
               className={`filter-chip ${formType === 'booking' ? 'filter-chip-active' : ''}`}
             >
               {t('bookShowroomVisit')}
@@ -91,23 +123,24 @@ export function ContactPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <label className="label-lux">{t('formName')}</label>
-                  <input required type="text" className="input-lux" />
+                  <input required type="text" name="name" className="input-lux" />
                 </div>
                 <div>
                   <label className="label-lux">{t('phone')}</label>
-                  <input required type="tel" className="input-lux" />
+                  <input required type="tel" name="phone" className="input-lux" />
                 </div>
               </div>
               <div>
                 <label className="label-lux">{t('email')}</label>
-                <input required type="email" className="input-lux" />
+                <input required type="email" name="email" className="input-lux" />
               </div>
 
               {formType === 'message' ? (
                 <>
                   <div>
                     <label className="label-lux">{t('projectType')}</label>
-                    <select className="input-lux cursor-pointer">
+                    <select name="projectType" className="input-lux cursor-pointer">
+                      <option value="">—</option>
                       <option>Residential</option>
                       <option>Commercial</option>
                       <option>Hospitality</option>
@@ -116,7 +149,7 @@ export function ContactPage() {
                   </div>
                   <div>
                     <label className="label-lux">{t('message')}</label>
-                    <textarea required rows={4} className="input-lux resize-none" />
+                    <textarea required name="message" rows={4} className="input-lux resize-none" />
                   </div>
                 </>
               ) : (
@@ -124,21 +157,24 @@ export function ContactPage() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
                       <label className="label-lux">{t('date')}</label>
-                      <input required type="date" className="input-lux" />
+                      <input required type="date" name="date" className="input-lux" />
                     </div>
                     <div>
                       <label className="label-lux">{t('time')}</label>
-                      <input required type="time" className="input-lux" />
+                      <input required type="time" name="time" className="input-lux" />
                     </div>
                   </div>
                   <div>
                     <label className="label-lux">{t('materialsOfInterest')}</label>
-                    <input type="text" placeholder="Marble, Porcelain, ..." className="input-lux" />
+                    <input type="text" name="materials" placeholder="Marble, Porcelain, ..." className="input-lux" />
                   </div>
                 </>
               )}
 
-              <button type="submit" className="btn-primary w-full">
+              {error && <p className="text-sm text-red-700">{error}</p>}
+
+              <button type="submit" disabled={submitting} className="btn-primary w-full flex items-center justify-center gap-2">
+                {submitting && <Loader2 size={15} strokeWidth={1.5} className="animate-spin" />}
                 {formType === 'message' ? t('send') : t('bookShowroomVisit')}
               </button>
             </form>

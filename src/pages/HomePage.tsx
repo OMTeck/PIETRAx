@@ -1,8 +1,9 @@
 import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
 import { useWishlist } from '@/context/WishlistContext';
-import { materials } from '@/data/materials';
-import { collections, projects, colourSwatches, showroomImage, heroImage } from '@/data/content';
+import { useCatalog } from '@/context/CatalogContext';
+import { pubName, pubCover, pubCollectionName, type PubMaterial } from '@/lib/public';
+import { colourSwatches, showroomImage, heroImage } from '@/data/content';
 import { Reveal, LazyImage, SectionTitle } from '@/components/ui/Reveal';
 import { ArrowRight, MapPin, Clock, Phone, Heart } from 'lucide-react';
 
@@ -10,10 +11,20 @@ export function HomePage() {
   const { t, lang } = useLang();
   const { navigate } = useRoute();
   const { has, toggle } = useWishlist();
+  const { materials, collections, projects } = useCatalog();
 
   const newArrivals = materials.filter((m) => m.newArrival).slice(0, 6);
   const featuredProjects = projects.slice(0, 5);
   const colours = Object.entries(colourSwatches);
+
+  const cover = (m: PubMaterial) => pubCover(m) ?? '';
+
+  const chipFor = (m: PubMaterial) => {
+    const typeLabel = lang === 'ar' ? m.materialType.labelAr : m.materialType.labelEn;
+    const colourLabel = m.color ? (lang === 'ar' ? m.color.labelAr : m.color.labelEn) : '';
+    const sizeLabel = m.sizes[1]?.label ?? m.sizes[0]?.label ?? '';
+    return [typeLabel, colourLabel, sizeLabel].filter(Boolean).join(' · ');
+  };
 
   return (
     <div>
@@ -65,24 +76,24 @@ export function HomePage() {
         <div className="container-lux">
           <SectionTitle title={t('featuredCollections')} />
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
-            {collections.map((col, i) => (
+            {collections.slice(0, 6).map((col, i) => (
               <Reveal key={col.id} delay={i * 100}>
                 <button
-                  onClick={() => navigate(`/collections?category=${col.name}`)}
+                  onClick={() => navigate(`/collections?collection=${col.slug}`)}
                   className="group relative w-full block overflow-hidden"
                 >
                   <LazyImage
-                    src={col.image}
-                    alt={col.name}
+                    src={col.coverImage ?? ''}
+                    alt={pubCollectionName(col.translations, lang)}
                     aspectClass="aspect-[4/5]"
                     className="transition-transform duration-700 group-hover:scale-105"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-stone-950/60 via-transparent to-transparent" />
                   <div className="absolute bottom-0 left-0 right-0 p-8 text-start">
                     <h3 className="font-display text-3xl font-light text-white mb-1">
-                      {lang === 'ar' ? col.nameAr : col.name}
+                      {pubCollectionName(col.translations, lang)}
                     </h3>
-                    <p className="text-sm text-white/70 mb-4">{col.description}</p>
+                    <p className="text-sm text-white/70 mb-4">{col.translations.find((t) => t.lang === (lang === 'ar' ? 'AR' : 'EN'))?.description ?? ''}</p>
                     <span className="inline-flex items-center gap-2 text-xs tracking-[0.15em] uppercase text-white/90 group-hover:gap-3 transition-all">
                       {t('explore')}
                       <ArrowRight size={14} strokeWidth={1.5} className="rtl:rotate-180" />
@@ -109,15 +120,15 @@ export function HomePage() {
                     className="group relative w-full block overflow-hidden"
                   >
                     <LazyImage
-                      src={m.textureImage}
-                      alt={m.name}
+                      src={cover(m)}
+                      alt={pubName(m, lang)}
                       aspectClass={isLarge ? 'aspect-[3/4] lg:aspect-[3/5]' : 'aspect-square'}
                       className="transition-transform duration-700 group-hover:scale-105"
                     />
                     <div className="absolute inset-0 bg-stone-950/0 group-hover:bg-stone-950/20 transition-colors duration-500" />
                     <div className="absolute bottom-0 left-0 right-0 p-4 md:p-5 text-start">
-                      <p className="font-display text-lg md:text-xl font-light text-white">{m.name}</p>
-                      <p className="text-xs text-white/60 mt-0.5">{m.category} · {m.colour} · {m.sizes[1] || m.sizes[0]}</p>
+                      <p className="font-display text-lg md:text-xl font-light text-white">{pubName(m, lang)}</p>
+                      <p className="text-xs text-white/60 mt-0.5">{chipFor(m)}</p>
                     </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); toggle(m.id); }}
@@ -200,17 +211,17 @@ export function HomePage() {
                   className="group relative w-full block overflow-hidden"
                 >
                   <LazyImage
-                    src={p.image}
-                    alt={p.title}
+                    src={p.coverImage ?? ''}
+                    alt={pubName(p, lang)}
                     aspectClass="aspect-[16/9] md:aspect-[21/9]"
                     className="transition-transform duration-1000 group-hover:scale-105"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-stone-950/70 via-stone-950/10 to-transparent" />
                   <div className="absolute bottom-0 left-0 right-0 p-6 md:p-10 flex items-end justify-between">
                     <div className="text-start">
-                      <p className="text-xs tracking-[0.2em] uppercase text-white/60 mb-2">{p.category}</p>
-                      <h3 className="font-display text-2xl md:text-4xl font-light text-white">{p.title}</h3>
-                      <p className="text-sm text-white/60 mt-1">{p.location}</p>
+                      <p className="text-xs tracking-[0.2em] uppercase text-white/60 mb-2">{lang === 'ar' ? p.projectType.labelAr : p.projectType.labelEn}</p>
+                      <h3 className="font-display text-2xl md:text-4xl font-light text-white">{pubName(p, lang)}</h3>
+                      <p className="text-sm text-white/60 mt-1">{p.location ?? ''}</p>
                     </div>
                     <span className="hidden md:flex items-center gap-2 text-xs tracking-[0.15em] uppercase text-white/80 group-hover:gap-3 transition-all">
                       {t('viewDetails')}

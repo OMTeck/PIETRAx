@@ -2,42 +2,33 @@ import { useState, useMemo } from 'react';
 import { Search, X } from 'lucide-react';
 import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
-import { materials } from '@/data/materials';
-import { projects } from '@/data/content';
+import { useCatalog } from '@/context/CatalogContext';
+import { pubName, pubCover, pubCollectionName } from '@/lib/public';
 import { LazyImage } from '@/components/ui/Reveal';
 
 export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t, lang } = useLang();
   const { navigate } = useRoute();
+  const { materials, projects, collections } = useCatalog();
   const [query, setQuery] = useState('');
 
   const results = useMemo(() => {
-    if (!query.trim()) return { materials: [], projects: [] };
+    if (!query.trim()) return { materials: [] as typeof materials, projects: [] as typeof projects, collections: [] as typeof collections };
     const q = query.toLowerCase();
+    const matches = <T extends { translations: { lang: string; name: string }[] }>(arr: T[]) =>
+      arr.filter((item) =>
+        item.translations.some((tr) => tr.name.toLowerCase().includes(q))
+      );
     return {
-      materials: materials
-        .filter(
-          (m) =>
-            m.name.toLowerCase().includes(q) ||
-            m.category.toLowerCase().includes(q) ||
-            m.colour.toLowerCase().includes(q) ||
-            m.slug.toLowerCase().includes(q)
-        )
-        .slice(0, 6),
-      projects: projects
-        .filter(
-          (p) =>
-            p.title.toLowerCase().includes(q) ||
-            p.location.toLowerCase().includes(q) ||
-            p.category.toLowerCase().includes(q)
-        )
-        .slice(0, 4),
+      materials: matches(materials).slice(0, 6),
+      projects: projects.filter((p) => pubName(p, lang).toLowerCase().includes(q)).slice(0, 4),
+      collections: matches(collections).slice(0, 4),
     };
-  }, [query]);
+  }, [query, materials, projects, collections, lang]);
 
   if (!open) return null;
 
-  const hasResults = results.materials.length > 0 || results.projects.length > 0;
+  const hasResults = results.materials.length > 0 || results.projects.length > 0 || results.collections.length > 0;
 
   return (
     <div className="fixed inset-0 z-[70] bg-ivory">
@@ -71,6 +62,31 @@ export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () =>
           </div>
         ) : (
           <div className="space-y-12">
+            {results.collections.length > 0 && (
+              <div>
+                <h3 className="text-xs tracking-[0.2em] uppercase text-stone-500 mb-5">{t('collections')}</h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {results.collections.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => {
+                        navigate(`/collections?collection=${c.slug}`);
+                        onClose();
+                      }}
+                      className="group text-start"
+                    >
+                      <LazyImage
+                        src={c.coverImage ?? ''}
+                        alt={pubCollectionName(c.translations, lang)}
+                        aspectClass="aspect-[4/3]"
+                        className="group-hover:opacity-90 transition-opacity"
+                      />
+                      <p className="mt-2 text-sm text-stone-900">{pubCollectionName(c.translations, lang)}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {results.materials.length > 0 && (
               <div>
                 <h3 className="text-xs tracking-[0.2em] uppercase text-stone-500 mb-5">{t('materials')}</h3>
@@ -85,13 +101,13 @@ export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () =>
                       className="group text-start"
                     >
                       <LazyImage
-                        src={m.textureImage}
-                        alt={m.name}
+                        src={pubCover(m) ?? ''}
+                        alt={pubName(m, lang)}
                         aspectClass="aspect-square"
                         className="group-hover:opacity-90 transition-opacity"
                       />
-                      <p className="mt-2 text-sm text-stone-900">{m.name}</p>
-                      <p className="text-xs text-stone-500">{m.category}</p>
+                      <p className="mt-2 text-sm text-stone-900">{pubName(m, lang)}</p>
+                      <p className="text-xs text-stone-500">{lang === 'ar' ? m.materialType.labelAr : m.materialType.labelEn}</p>
                     </button>
                   ))}
                 </div>
@@ -111,13 +127,13 @@ export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () =>
                       className="group text-start"
                     >
                       <LazyImage
-                        src={p.image}
-                        alt={p.title}
+                        src={p.coverImage ?? ''}
+                        alt={pubName(p, lang)}
                         aspectClass="aspect-[4/3]"
                         className="group-hover:opacity-90 transition-opacity"
                       />
-                      <p className="mt-2 text-sm text-stone-900">{p.title}</p>
-                      <p className="text-xs text-stone-500">{p.location}</p>
+                      <p className="mt-2 text-sm text-stone-900">{pubName(p, lang)}</p>
+                      {p.location && <p className="text-xs text-stone-500">{p.location}</p>}
                     </button>
                   ))}
                 </div>
