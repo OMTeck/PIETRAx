@@ -2,7 +2,7 @@ import helmet from 'helmet';
 import type { RequestHandler } from 'express';
 import { config } from '../config.js';
 
-const CSP_IMG_SRC = ["'self'", 'data:', 'blob:'];
+const CSP_IMG_SRC = ["'self'", 'data:', 'blob:', 'https:'];
 
 export const securityHeaders: RequestHandler = helmet({
   contentSecurityPolicy: {

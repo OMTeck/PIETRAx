@@ -1,0 +1,40 @@
+# Render Blueprint - PIETRAx (full-stack: Express API + Vite SPA + Postgres)
+# Deploy: Render dashboard -> "New" -> "Blueprint" -> select this repository.
+# See DEPLOY.md for the full walkthrough (Neon/Supabase free Postgres, first-run env).
+services:
+  - type: web
+    name: pietrax
+    runtime: node
+    plan: free
+    autoDeploy: true
+    buildCommand: npm ci --no-audit --no-fund && cd server && npm ci --no-audit --no-fund && npm run db:generate && cd .. && npm run build && cd server && npm run build
+    preDeployCommand: cd server && npx prisma db push && npm run db:ensure
+    startCommand: node server/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22.14.0"
+      - key: DATABASE_URL
+        sync: false
+      - key: SEED_ADMIN_EMAIL
+        sync: false
+      - key: SEED_ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: CSRF_SECRET
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: CLIENT_DIST_DIR
+        value: /opt/render/project/src/dist
+      - key: UPLOAD_DIR
+        value: /opt/render/project/src/server/uploads
+    disk:
+      name: pietrax-uploads
+      mountPath: /opt/render/project/src/server/uploads
+      sizeGB: 1
