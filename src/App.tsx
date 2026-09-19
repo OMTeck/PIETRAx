@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { RouteProvider, useRoute } from '@/context/RouteContext';
 import { LanguageProvider } from '@/context/LanguageContext';
 import { WishlistProvider } from '@/context/WishlistContext';
+import { AdminAuthProvider } from '@/context/AdminAuthContext';
+import { ToastProvider } from '@/admin/ui';
+import { AdminApp } from '@/admin/AdminApp';
 import { Header } from '@/components/Header';
 import { Footer } from '@/components/Footer';
 import { SearchOverlay } from '@/components/SearchOverlay';
@@ -21,6 +24,9 @@ function AppContent() {
   const basePath = path.split('?')[0];
 
   let page;
+  if (basePath === '/admin' || basePath.startsWith('/admin/')) {
+    return <AdminApp />;
+  }
   if (basePath === '/' || basePath === '') {
     page = <HomePage />;
   } else if (basePath.startsWith('/collections')) {
@@ -61,7 +67,11 @@ function App() {
     <LanguageProvider>
       <WishlistProvider>
         <RouteProvider>
-          <AppContent />
+          <ToastProvider>
+            <AdminAuthProvider>
+              <AppContent />
+            </AdminAuthProvider>
+          </ToastProvider>
         </RouteProvider>
       </WishlistProvider>
     </LanguageProvider>
