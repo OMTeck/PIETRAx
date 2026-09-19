@@ -83,6 +83,29 @@ export function VisualizerPage() {
     }
   }, [presetMaterialSlug, visMaterials, selectedMaterialId]);
 
+  useEffect(() => {
+    if (!presetMaterialSlug || selectedRoomId) return;
+    const material = visMaterials.find((m) => m.slug === presetMaterialSlug);
+    const room = rooms.find((r) => r.surfaces.some((s) => s.defaultMaterialSlug === presetMaterialSlug)) ?? rooms[0];
+    if (!room || !material) return;
+    const surface = room.surfaces.find((s) => s.defaultMaterialSlug === presetMaterialSlug) ?? room.surfaces[0];
+    if (!surface) return;
+    setSelectedMaterialId(material.id);
+    setSelectedRoomId(room.id);
+    setSelectedSurfaceId(surface.id);
+    setStep('result');
+    setUploadMode(false);
+    setUploadedImage(null);
+  }, [presetMaterialSlug, rooms, visMaterials, selectedRoomId]);
+
+  const filteredMaterials = useMemo(() => {
+    return visMaterials.filter((m) => {
+      if (searchQuery && !m.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (filterCategory !== 'All' && m.typeCode !== filterCategory) return false;
+      return true;
+    });
+  }, [searchQuery, filterCategory, visMaterials]);
+
   if (loading && rooms.length === 0) {
     return (
       <div className="pt-32 pb-20 min-h-screen bg-stone-100 text-center">
@@ -95,14 +118,6 @@ export function VisualizerPage() {
   const selectedSurface = selectedRoom?.surfaces.find((s) => s.id === selectedSurfaceId);
   const selectedMaterial = visMaterials.find((m) => m.id === selectedMaterialId);
   const compareMaterial = visMaterials.find((m) => m.id === compareMaterialId);
-
-  const filteredMaterials = useMemo(() => {
-    return visMaterials.filter((m) => {
-      if (searchQuery && !m.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-      if (filterCategory !== 'All' && m.typeCode !== filterCategory) return false;
-      return true;
-    });
-  }, [searchQuery, filterCategory, visMaterials]);
 
   const roomImage = uploadedImage || selectedRoom?.previewImage || null;
 

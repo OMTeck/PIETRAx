@@ -204,16 +204,16 @@ export function pubCover(material: PubMaterial): string | null {
 
 export const publicApi = {
   materials: (params?: { search?: string; materialType?: string; color?: string; finish?: string; featured?: boolean; fresh?: boolean; popular?: boolean }) =>
-    get<{ materials: PubMaterial[] }>(`/api/public/materials${qs(params)}`).then((r) => r.materials),
-  material: (slug: string) => get<{ material: PubMaterial }>(`/api/public/materials/${slug}`).then((r) => r.material),
-  collections: () => get<{ collections: PubCollection[] }>('/api/public/collections').then((r) => r.collections),
-  projects: () => get<{ projects: PubProject[] }>('/api/public/projects').then((r) => r.projects),
-  project: (slug: string) => get<{ project: PubProject }>(`/api/public/projects/${slug}`).then((r) => r.project),
-  visualizer: () => get<PubVisualizer>('/api/public/visualizer'),
-  site: () => get<{ settings: SiteSettings }>('/api/public/site').then((r) => r.settings),
-  submitQuote: (body: QuoteInput) => post<{ ok: boolean; id: string }>('/api/public/quotes', body),
-  submitMessage: (body: MessageInput) => post<{ ok: boolean; id: string }>('/api/public/messages', body),
-  submitBooking: (body: BookingInput) => post<{ ok: boolean; id: string }>('/api/public/bookings', body),
+    get<{ materials: PubMaterial[] }>(`/api/materials${qs(params)}`).then((r) => r.materials),
+  material: (slug: string) => get<{ material: PubMaterial }>(`/api/materials/${slug}`).then((r) => r.material),
+  collections: () => get<{ collections: PubCollection[] }>('/api/collections').then((r) => r.collections),
+  projects: () => get<{ projects: PubProject[] }>('/api/projects').then((r) => r.projects),
+  project: (slug: string) => get<{ project: PubProject }>(`/api/projects/${slug}`).then((r) => r.project),
+  visualizer: () => get<PubVisualizer>('/api/visualizer'),
+  site: () => get<{ settings: SiteSettings }>('/api/site').then((r) => r.settings),
+  submitQuote: (body: QuoteInput) => post<{ ok: boolean; id: string }>('/api/quotes', body),
+  submitMessage: (body: MessageInput) => post<{ ok: boolean; id: string }>('/api/messages', body),
+  submitBooking: (body: BookingInput) => post<{ ok: boolean; id: string }>('/api/bookings', body),
 };
 
 export { ApiError };

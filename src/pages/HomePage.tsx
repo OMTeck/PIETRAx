@@ -115,9 +115,12 @@ export function HomePage() {
               const isLarge = i === 0 || i === 3;
               return (
                 <Reveal key={m.id} delay={i * 80} className={isLarge ? 'lg:row-span-2' : ''}>
-                  <button
+                  <div
+                    role="link"
+                    tabIndex={0}
                     onClick={() => navigate(`/material/${m.slug}`)}
-                    className="group relative w-full block overflow-hidden"
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/material/${m.slug}`); }}
+                    className="group relative w-full block overflow-hidden cursor-pointer"
                   >
                     <LazyImage
                       src={cover(m)}
@@ -136,7 +139,7 @@ export function HomePage() {
                     >
                       <Heart size={14} strokeWidth={1.5} fill={has(m.id) ? 'currentColor' : 'none'} className={has(m.id) ? 'text-accent' : ''} />
                     </button>
-                  </button>
+                  </div>
                 </Reveal>
               );
             })}
