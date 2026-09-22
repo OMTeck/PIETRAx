@@ -1,5 +1,6 @@
 import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
 import type { Request, RequestHandler } from 'express';
+import { config } from '../config.js';
 
 export function createLimiter(opts: {
   windowMs?: number;
@@ -8,7 +9,9 @@ export function createLimiter(opts: {
   keyGenerator?: (req: Request) => string;
   skipSuccessfulRequests?: boolean;
 }): RateLimitRequestHandler {
-  return rateLimit(opts);
+  // Rate limiting targets shared-IP abuse in production. Skip it while developing
+  // locally (loopback + dev browser), where it only gets in the way.
+  return rateLimit({ ...opts, skip: () => !config.isProduction });
 }
 
 // General API traffic (all /api). High-level abuse protection.

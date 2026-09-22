@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { Layers, Boxes, FolderKanban, MessageSquare, FileText, CalendarClock, Users, Activity, TrendingUp } from 'lucide-react';
 import { overviewApi } from '@/admin/server';
 import { useAsync } from '@/admin/lib';
@@ -65,7 +64,7 @@ export function DashboardPage() {
   const s = data.summary;
   const totalMaterials = s.publishedMaterials + s.draftedMaterials + s.archivedMaterials;
 
-  const quotesTotal = useMemo(() => data.trends.quotes.reduce((a, b) => a + b.count, 0), [data]);
+  const quotesTotal = data.trends.quotes.reduce((a, b) => a + b.count, 0);
 
   return (
     <div>
