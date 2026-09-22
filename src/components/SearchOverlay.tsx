@@ -3,13 +3,14 @@ import { Search, X } from 'lucide-react';
 import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
 import { useCatalog } from '@/context/CatalogContext';
-import { pubName, pubCover, pubCollectionName } from '@/lib/public';
+import { pubName, pubCover, pubCollectionName, companySettings } from '@/lib/public';
 import { LazyImage } from '@/components/ui/Reveal';
 
 export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t, lang } = useLang();
   const { navigate } = useRoute();
-  const { materials, projects, collections } = useCatalog();
+  const { materials, projects, collections, settings } = useCatalog();
+  const brand = companySettings(settings).nameEn || 'PIETRA';
   const [query, setQuery] = useState('');
 
   const results = useMemo(() => {
@@ -34,7 +35,7 @@ export function SearchOverlay({ open, onClose }: { open: boolean; onClose: () =>
     <div className="fixed inset-0 z-[70] bg-ivory">
       <div className="container-lux pt-8">
         <div className="flex items-center justify-between mb-12">
-          <span className="font-display text-2xl tracking-[0.3em] font-light text-stone-900">PIETRA</span>
+          <span className="font-display text-2xl tracking-[0.3em] font-light text-stone-900">{brand}</span>
           <button onClick={onClose} className="text-stone-700 hover:text-stone-900">
             <X size={24} strokeWidth={1.5} />
           </button>

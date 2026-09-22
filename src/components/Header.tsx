@@ -3,12 +3,16 @@ import { Search, Heart, Menu, X, Globe } from 'lucide-react';
 import { useLang } from '@/context/LanguageContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { useRoute } from '@/context/RouteContext';
+import { useCatalog } from '@/context/CatalogContext';
+import { companySettings } from '@/lib/public';
 import type { TranslationKey } from '@/data/i18n';
 
 export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
   const { lang, t, toggleLang } = useLang();
   const { items: wishlistItems } = useWishlist();
   const { navigate, path } = useRoute();
+  const { settings } = useCatalog();
+  const brand = companySettings(settings).nameEn || 'PIETRA';
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -52,7 +56,7 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
               scrolled ? 'text-stone-900' : 'text-white'
             }`}
           >
-            PIETRA
+            {brand}
           </button>
 
           {/* Desktop Nav */}
@@ -118,7 +122,7 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
       {mobileOpen && (
         <div className="fixed inset-0 z-[60] bg-ivory">
           <div className="flex items-center justify-between px-6 py-5 border-b border-stone-200">
-            <span className="font-display text-2xl tracking-[0.3em] font-light text-stone-900">PIETRA</span>
+            <span className="font-display text-2xl tracking-[0.3em] font-light text-stone-900">{brand}</span>
             <button onClick={() => setMobileOpen(false)} className="text-stone-900">
               <X size={24} strokeWidth={1.5} />
             </button>

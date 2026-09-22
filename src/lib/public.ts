@@ -138,6 +138,54 @@ export interface SiteSettings {
   [section: string]: Record<string, unknown>;
 }
 
+export type CompanySettings = {
+  nameAr?: string;
+  nameEn?: string;
+  taglineAr?: string;
+  taglineEn?: string;
+  aboutAr?: string;
+  aboutEn?: string;
+  foundedYear?: number;
+};
+
+export type ContactSettings = {
+  phone?: string;
+  whatsapp?: string;
+  email?: string;
+  address?: string;
+  googleMapsUrl?: string;
+};
+
+export type ShowroomSettings = {
+  image?: string;
+  location?: string;
+  hoursAr?: string;
+  hoursEn?: string;
+};
+
+export type SocialSettings = {
+  instagram?: string;
+  facebook?: string;
+  pinterest?: string;
+  linkedin?: string;
+};
+
+export function companySettings(settings: SiteSettings | null): CompanySettings {
+  return (settings?.company ?? {}) as CompanySettings;
+}
+
+export function contactSettings(settings: SiteSettings | null): ContactSettings {
+  return (settings?.contact ?? {}) as ContactSettings;
+}
+
+export function showroomSettings(settings: SiteSettings | null): ShowroomSettings {
+  return (settings?.showroom ?? {}) as ShowroomSettings;
+}
+
+export function socialSettings(settings: SiteSettings | null): SocialSettings {
+  return (settings?.social ?? {}) as SocialSettings;
+}
+
 export interface QuoteItemInput {
   slug?: string;
   name?: string;

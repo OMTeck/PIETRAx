@@ -2,7 +2,7 @@ import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { useCatalog } from '@/context/CatalogContext';
-import { pubName, pubCover, pubCollectionName, type PubMaterial } from '@/lib/public';
+import { pubName, pubCover, pubCollectionName, companySettings, type PubMaterial } from '@/lib/public';
 import { colourSwatches, showroomImage, heroImage } from '@/data/content';
 import { Reveal, LazyImage, SectionTitle } from '@/components/ui/Reveal';
 import { ArrowRight, MapPin, Clock, Phone, Heart } from 'lucide-react';
@@ -11,7 +11,11 @@ export function HomePage() {
   const { t, lang } = useLang();
   const { navigate } = useRoute();
   const { has, toggle } = useWishlist();
-  const { materials, collections, projects } = useCatalog();
+  const { materials, collections, projects, settings } = useCatalog();
+
+  const company = companySettings(settings);
+  const brand = company.nameEn || 'PIETRA';
+  const heroTitle = lang === 'ar' ? company.taglineAr || t('heroTitle') : company.taglineEn || t('heroTitle');
 
   const newArrivals = materials.filter((m) => m.newArrival).slice(0, 6);
   const featuredProjects = projects.slice(0, 5);
@@ -40,11 +44,11 @@ export function HomePage() {
         </div>
         <div className="relative z-10 text-center px-6">
           <Reveal>
-            <p className="text-xs tracking-[0.3em] uppercase text-white/70 mb-6">PIETRA GALLERY</p>
+            <p className="text-xs tracking-[0.3em] uppercase text-white/70 mb-6">{brand} GALLERY</p>
           </Reveal>
           <Reveal delay={200}>
             <h1 className="font-display text-display font-light text-white mb-4 max-w-4xl mx-auto leading-[1.05]">
-              {t('heroTitle')}
+              {heroTitle}
             </h1>
           </Reveal>
           <Reveal delay={400}>
