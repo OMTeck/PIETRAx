@@ -134,6 +134,22 @@ export interface PubVisualizer {
   materials: PubVisualizerMaterial[];
 }
 
+export interface PubAIPoint {
+  x: number;
+  y: number;
+}
+
+export interface PubAISegment {
+  surfaceType: string;
+  label: string;
+  confidence: number;
+  points: PubAIPoint[];
+}
+
+export interface PubAIConfig {
+  ai: { enabled: boolean };
+}
+
 export interface SiteSettings {
   [section: string]: Record<string, unknown>;
 }
@@ -258,6 +274,12 @@ export const publicApi = {
   projects: () => get<{ projects: PubProject[] }>('/api/projects').then((r) => r.projects),
   project: (slug: string) => get<{ project: PubProject }>(`/api/projects/${slug}`).then((r) => r.project),
   visualizer: () => get<PubVisualizer>('/api/visualizer'),
+  visualizerConfig: () => get<PubAIConfig>('/api/visualizer/config'),
+  segmentRoom: (body: { image: string; mime?: string }) =>
+    post<{ status: string; width: number; height: number; segments: PubAISegment[] }>(
+      '/api/visualizer/segment',
+      body,
+    ),
   site: () => get<{ settings: SiteSettings }>('/api/site').then((r) => r.settings),
   submitQuote: (body: QuoteInput) => post<{ ok: boolean; id: string }>('/api/quotes', body),
   submitMessage: (body: MessageInput) => post<{ ok: boolean; id: string }>('/api/messages', body),

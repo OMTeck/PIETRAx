@@ -10,19 +10,13 @@ import {
   Heart, Download, Share2, ChevronLeft, ChevronRight, Check,
 } from 'lucide-react';
 
-type Step = 'room' | 'surface' | 'material' | 'result';
-
-interface VisMaterial {
-  id: string;
-  slug: string;
-  name: string;
-  textureUrl: string;
-  typeCode: string;
-  typeLabel: string;
-  colourLabel: string;
-  finishLabel: string;
-  sizeLabel: string;
-}
+import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
+import { tileCss } from '@/lib/visualizer/textureRenderer';
+import { pointsToClipPath, simplifyPolygon } from '@/lib/visualizer/geometry';
+import { snapshotElement, downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
+import type { RoomLayout, SurfaceKind, Step, VisMaterial, NormalizedPoint } from '@/lib/visualizer/types';
+import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
+import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 
 export function VisualizerPage() {
   const { t, lang } = useLang();
@@ -74,7 +68,31 @@ export function VisualizerPage() {
   const [sliderPos, setSliderPos] = useState(50);
   const [zoom, setZoom] = useState(1);
   const [showSaved, setShowSaved] = useState(false);
+  const [layout, setLayout] = useState<RoomLayout | null>(null);
+  const [aiSegments, setAiSegments] = useState<Partial<Record<string, NormalizedPoint[]>>>({});
+  const [editingSurfaceId, setEditingSurfaceId] = useState<string | null>(null);
+  const [imageAspect, setImageAspect] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
+  const [exporting, setExporting] = useState(false);
+
+  /* Surface +' perspective mapping kept close to the helpers for maintainability. */
+  const surfKind = (id: string): SurfaceKind =>
+    id === 'wall' ? 'wall' : id === 'ceiling' ? 'ceiling' : id === 'countertop' ? 'countertop' : 'floor';
+  const surfTileCm = (id: string): number =>
+    id === 'countertop' ? 60 : id === 'ceiling' ? 30 : 40;
+
+  /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
+  useEffect(() => {
+    if (!uploadedImage || !uploadMode) return;
+    const img = new Image();
+    img.onload = () => {
+      setLayout(analyzeRoomPhoto(img));
+      setImageAspect(img.naturalWidth > 0 ? img.naturalWidth / img.naturalHeight : 16 / 10);
+    };
+    img.src = uploadedImage;
+    return () => { setLayout(null); setAiSegments({}); setEditingSurfaceId(null); setImageAspect(null); };
+  }, [uploadedImage, uploadMode]);
 
   useEffect(() => {
     if (presetMaterialSlug && !selectedMaterialId) {
@@ -136,7 +154,51 @@ export function VisualizerPage() {
     }
   };
 
+  const defaultUploadPolygon: Record<string, NormalizedPoint[]> = {
+    floor: [
+      { x: 0, y: 0.55 }, { x: 1, y: 0.55 }, { x: 1, y: 1 }, { x: 0, y: 1 },
+    ],
+    wall: [
+      { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 0.55 }, { x: 0, y: 0.55 },
+    ],
+    countertop: [
+      { x: 0, y: 0.4 }, { x: 1, y: 0.4 }, { x: 1, y: 0.6 }, { x: 0, y: 0.6 },
+    ],
+  };
+
+  const polygonFor = (surfaceId: string): NormalizedPoint[] =>
+    aiSegments[surfaceId] ?? defaultUploadPolygon[surfaceId] ?? [
+      { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 },
+    ];
+
+  /** Maps a cloud result (surfaceType -> points in 0..1) into per-surface clips. */
+  const handleAISegments = (result: { segments: { surfaceType: string; points: { x: number; y: number }[] }[]; width: number; height: number }) => {
+    const mapped: Partial<Record<string, NormalizedPoint[]>> = {};
+    for (const seg of result.segments) {
+      const surfaceId = seg.surfaceType.toLowerCase();
+      if (surfaceId === 'floor' || surfaceId === 'wall' || surfaceId === 'countertop') {
+        if (seg.points.length >= 3) {
+          const pts = seg.points.map((p) => ({
+            x: p.x / result.width,
+            y: p.y / result.height,
+          }));
+          mapped[surfaceId] = simplifyPolygon(pts, 0.02, 30);
+        }
+      }
+    }
+    setAiSegments((prev) => ({ ...prev, ...mapped }));
+    // Auto-select the largest detected region so the user lands on a usable default.
+    const bestId = (Object.keys(mapped) as string[]).sort(
+      (a, b) => (mapped[b]?.length ?? 0) - (mapped[a]?.length ?? 0),
+    )[0];
+    if (bestId) setUploadSurface(bestId);
+  };
+
   const applySurfaceClip = (surfaceId: string): string => {
+    if (uploadMode && imageAspect) {
+      const pts = polygonFor(surfaceId);
+      if (pts.length >= 3) return pointsToClipPath(pts);
+    }
     if (uploadMode) {
       if (surfaceId === 'floor') return 'polygon(0 55%, 100% 55%, 100% 100%, 0 100%)';
       if (surfaceId === 'wall') return 'polygon(0 0, 100% 0, 100% 55%, 0 55%)';
@@ -147,14 +209,37 @@ export function VisualizerPage() {
   };
 
   const uploadSurfaces = [
-    { id: 'floor', name: 'Floor', nameAr: 'الأرضية' },
-    { id: 'wall', name: 'Wall', nameAr: 'الجدار' },
-    { id: 'countertop', name: 'Countertop', nameAr: 'الجزيرة' },
+    { id: 'floor', name: 'Floor', nameAr: '' },
+    { id: 'wall', name: 'Wall', nameAr: '' },
+    { id: 'countertop', name: 'Countertop', nameAr: '' },
   ];
 
   const surfaces = uploadMode
     ? uploadSurfaces.map((s) => ({ id: s.id, clipPath: '', nameAr: s.nameAr, nameEn: s.name }))
     : (selectedRoom?.surfaces ?? []).map((s) => ({ id: s.id, clipPath: s.clipPath, nameAr: s.nameAr, nameEn: s.nameEn }));
+
+  const handleExport = async (mode: 'download' | 'share') => {
+    if (!resultRef.current || exporting) return;
+    setExporting(true);
+    try {
+      const blob = await snapshotElement(resultRef.current);
+      if (mode === 'download') {
+        downloadBlob(blob, 'pietrax-visualizer.png');
+      } else {
+        await shareBlob(blob, selectedMaterial?.name ?? 'PIETRAx', 'pietrax-visualizer.png');
+      }
+    } catch {
+      // Snapshot failures fall back to opening the image.
+      if (roomImage) {
+        const a = document.createElement('a');
+        a.href = roomImage;
+        a.download = 'pietrax-visualizer.png';
+        a.click();
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const steps: Step[] = ['room', 'surface', 'material', 'result'];
   const currentStepIndex = steps.indexOf(step);
@@ -245,35 +330,64 @@ export function VisualizerPage() {
               <ArrowLeft size={14} strokeWidth={1.5} className="rtl:rotate-180" />
               {t('changeRoom')}
             </button>
+            {uploadMode && (
+              <span className="text-xs tracking-[0.15em] uppercase text-stone-400">
+                {t('selectArea')}
+              </span>
+            )}
           </div>
 
-          <div className="relative aspect-[16/10] overflow-hidden bg-stone-200 mb-6">
-            <img src={roomImage} alt="Room" className="w-full h-full object-cover" />
-            {surfaces.map((surface) => {
-              const clip = uploadMode
-                ? surface.id === 'floor' ? 'polygon(0 55%, 100% 55%, 100% 100%, 0 100%)'
-                  : surface.id === 'wall' ? 'polygon(0 0, 100% 0, 100% 55%, 0 55%)'
-                  : 'polygon(0 40%, 100% 40%, 100% 60%, 0 60%)'
-                : surface.clipPath || 'polygon(0 0, 100% 0, 100% 100%, 0 100%)';
-              return (
+          {uploadMode && (
+            <div className="flex flex-wrap items-center gap-3 mb-6">
+              <AIAnalyzeButton uploadedImage={roomImage} onSegments={handleAISegments} />
+              {editingSurfaceId && (
                 <button
-                  key={surface.id}
-                  onClick={() => {
-                    setSelectedSurfaceId(surface.id);
-                    setStep('material');
-                  }}
-                  className="absolute inset-0 group transition-all"
-                  style={{ clipPath: clip }}
+                  onClick={() => setEditingSurfaceId(null)}
+                  className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 text-stone-900 hover:bg-stone-900 hover:text-ivory transition-colors"
                 >
-                  <div className="w-full h-full bg-accent/0 group-hover:bg-accent/30 transition-colors duration-300 flex items-center justify-center">
-                    <span className="opacity-0 group-hover:opacity-100 transition-opacity text-white text-sm tracking-[0.15em] uppercase bg-stone-900/80 px-4 py-2">
-                      {lang === 'ar' ? surface.nameAr : surface.nameEn}
-                    </span>
-                  </div>
+                  <Check size={13} strokeWidth={1.5} /> {t('editArea')}
                 </button>
-              );
-            })}
-          </div>
+              )}
+            </div>
+          )}
+
+          {editingSurfaceId && uploadMode ? (
+            <div className="mb-6 border border-stone-300 bg-stone-100 p-3">
+              <p className="text-xs tracking-[0.15em] uppercase text-stone-500 mb-3">{t('adjustAreaHint')}</p>
+              <PolygonEditor
+                imageUrl={roomImage}
+                points={aiSegments[editingSurfaceId] ?? defaultUploadPolygon[editingSurfaceId] ?? []}
+                onChange={(pts) => setAiSegments((prev) => ({ ...prev, [editingSurfaceId]: pts }))}
+              />
+            </div>
+          ) : (
+            <div
+              className="relative aspect-[16/10] overflow-hidden bg-stone-200 mb-6"
+              style={uploadMode && imageAspect ? { aspectRatio: `${imageAspect}` } : undefined}
+            >
+              <img src={roomImage} alt="Room" className="w-full h-full object-cover" />
+              {surfaces.map((surface) => {
+                const clip = applySurfaceClip(surface.id);
+                return (
+                  <button
+                    key={surface.id}
+                    onClick={() => {
+                      setSelectedSurfaceId(surface.id);
+                      setStep('material');
+                    }}
+                    className="absolute inset-0 group transition-all"
+                    style={{ clipPath: clip }}
+                  >
+                    <div className="w-full h-full bg-accent/0 group-hover:bg-accent/30 transition-colors duration-300 flex items-center justify-center">
+                      <span className="opacity-0 group-hover:opacity-100 transition-opacity text-white text-sm tracking-[0.15em] uppercase bg-stone-900/80 px-4 py-2">
+                        {lang === 'ar' ? (surface.nameAr || t(surface.id === 'floor' ? 'floor' : surface.id === 'wall' ? 'wall' : 'countertop')) : surface.nameEn}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-3 justify-center">
             {surfaces.map((surface) => (
@@ -285,9 +399,17 @@ export function VisualizerPage() {
                 }}
                 className="filter-chip"
               >
-                {lang === 'ar' ? surface.nameAr : surface.nameEn}
+                {lang === 'ar' ? (surface.nameAr || t(surface.id === 'floor' ? 'floor' : surface.id === 'wall' ? 'wall' : 'countertop')) : surface.nameEn}
               </button>
             ))}
+            {uploadMode && !editingSurfaceId && (
+              <button
+                onClick={() => setEditingSurfaceId(surfaces[0]?.id ?? 'floor')}
+                className="filter-chip"
+              >
+                {t('editArea')}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -377,23 +499,42 @@ export function VisualizerPage() {
           </div>
 
           {/* Visualizer Canvas */}
-          <div className="relative aspect-[16/10] overflow-hidden bg-stone-200" style={{ transform: `scale(${zoom})`, transformOrigin: 'center' }}>
+          <div
+            ref={resultRef}
+            className="relative aspect-[16/10] overflow-hidden bg-stone-200"
+            style={uploadMode && imageAspect ? { transform: `scale(${zoom})`, transformOrigin: 'center', aspectRatio: `${imageAspect}` } : { transform: `scale(${zoom})`, transformOrigin: 'center' }}
+          >
             <img src={roomImage} alt="Room" className="absolute inset-0 w-full h-full object-cover" />
 
             {/* Applied Material */}
             <div
               className="absolute inset-0 transition-all duration-500"
-              style={{
-                clipPath: applySurfaceClip(selectedSurfaceId || 'floor'),
-                backgroundImage: `url(${selectedMaterial.textureUrl})`,
-                backgroundSize: showCompare && sliderPos < 50 ? '0% 0%' : 'cover',
-                backgroundPosition: 'center',
-                mixBlendMode: 'multiply',
-                opacity: 0.85,
-              }}
-            />
-
-            {/* Compare Slider */}
+              style={{ clipPath: applySurfaceClip(selectedSurfaceId || 'floor') }}
+            >
+              {uploadMode && layout ? (
+                <div
+                  className="absolute inset-0"
+                  style={tileCss({
+                    textureUrl: selectedMaterial.textureUrl,
+                    tileCm: surfTileCm(selectedSurfaceId || 'floor'),
+                    pxPerMeter: layout.pxPerMeter,
+                    kind: surfKind(selectedSurfaceId || 'floor'),
+                    horizonY: layout.horizonY,
+                  })}
+                />
+              ) : (
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    backgroundImage: `url(${selectedMaterial.textureUrl})`,
+                    backgroundSize: showCompare && sliderPos < 50 ? '0% 0%' : 'cover',
+                    backgroundPosition: 'center',
+                    mixBlendMode: 'multiply',
+                    opacity: 0.85,
+                  }}
+                />
+              )}
+            </div>
             {showCompare && (
               <>
                 <div
@@ -466,9 +607,9 @@ export function VisualizerPage() {
                 <h3 className="font-display text-2xl font-light text-stone-900 mb-2">{selectedMaterial.name}</h3>
                 <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-stone-600">
                   {selectedMaterial.typeLabel && <span>{selectedMaterial.typeLabel}</span>}
-                  {selectedMaterial.colourLabel && <span>· {selectedMaterial.colourLabel}</span>}
-                  {selectedMaterial.finishLabel && <span>· {selectedMaterial.finishLabel}</span>}
-                  {selectedMaterial.sizeLabel && <span>· {selectedMaterial.sizeLabel}</span>}
+                  {selectedMaterial.colourLabel && <span>{selectedMaterial.colourLabel}</span>}
+                  {selectedMaterial.finishLabel && <span>{selectedMaterial.finishLabel}</span>}
+                  {selectedMaterial.sizeLabel && <span>{selectedMaterial.sizeLabel}</span>}
                 </div>
               </div>
               <div className="flex flex-col gap-2 w-full md:w-auto">
@@ -494,11 +635,11 @@ export function VisualizerPage() {
                 <Heart size={14} strokeWidth={1.5} fill={has(selectedMaterial.id) ? 'currentColor' : 'none'} className={has(selectedMaterial.id) ? 'text-accent' : ''} />
                 {t('saveDesign')}
               </button>
-              <button className="flex items-center gap-2 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900 transition-colors">
+              <button onClick={() => handleExport('download')} disabled={exporting} className="flex items-center gap-2 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900 transition-colors disabled:opacity-50">
                 <Download size={14} strokeWidth={1.5} />
                 {t('downloadImage')}
               </button>
-              <button className="flex items-center gap-2 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900 transition-colors">
+              <button onClick={() => handleExport('share')} disabled={exporting} className="flex items-center gap-2 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900 transition-colors disabled:opacity-50">
                 <Share2 size={14} strokeWidth={1.5} />
                 {t('share')}
               </button>
@@ -507,7 +648,7 @@ export function VisualizerPage() {
 
           {showSaved && (
             <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-stone-900 text-ivory px-6 py-3 text-sm tracking-wider z-50">
-              {t('saveDesign')} ✓
+              {t('saveDesign')}
             </div>
           )}
         </div>

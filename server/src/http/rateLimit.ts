@@ -43,6 +43,13 @@ export const publicSubmitLimiter: RequestHandler = createLimiter({
   message: 'Too many submissions from this device. Please try again later.',
 });
 
+// Cloud AI segmentation is a paid external call: keep it tight per visitor.
+export const visualizerSegmentLimiter: RequestHandler = createLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 12,
+  message: 'Too many image analyses. Please try again later.',
+});
+
 // Uploads are a common attack surface.
 export const uploadLimiter: RequestHandler = createLimiter({
   windowMs: 60 * 60 * 1000,

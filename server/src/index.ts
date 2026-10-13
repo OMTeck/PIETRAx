@@ -14,6 +14,7 @@ import { apiLimiter } from './http/rateLimit.js';
 import { errorHandler, notFoundHandler } from './http/errors.js';
 import { authRouter } from './routes/auth.js';
 import { publicRouter } from './routes/public.js';
+import { visualizerRouter } from './routes/visualizer.js';
 import { adminRouter } from './routes/admin.js';
 
 requireConfig();
@@ -52,6 +53,7 @@ app.use('/api', apiLimiter);
 // API routes.
 app.use('/api/auth', authRouter);
 app.use('/api', publicRouter);
+app.use('/api/visualizer', visualizerRouter);
 app.use('/api/admin', adminRouter);
 
 // Uploaded assets (UUID filenames -> static, cacheable).

@@ -43,6 +43,16 @@ export const config = {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
+  // Roboflow cloud segmentation for the client room visualizer.
+  roboflow: {
+    enabled: envBool('ROBOFLOW_ENABLED', false),
+    apiKey: envStr('ROBOFLOW_API_KEY'),
+    // "{dataset}/{version}" path on the hosted inference API, e.g. "floor-wall-countertop/1".
+    model: envStr('ROBOFLOW_MODEL'),
+    baseUrl: envStr('ROBOFLOW_BASE_URL', 'https://detect.roboflow.com'),
+    confidence: envInt('ROBOFLOW_CONFIDENCE', 25),
+    timeoutMs: envInt('ROBOFLOW_TIMEOUT_MS', 20000),
+  },
 } as const;
 
 export function requireConfig() {
