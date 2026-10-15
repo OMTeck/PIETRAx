@@ -53,6 +53,12 @@ export const config = {
     confidence: envInt('ROBOFLOW_CONFIDENCE', 25),
     timeoutMs: envInt('ROBOFLOW_TIMEOUT_MS', 20000),
   },
+  // Cloudflare Workers AI (FLUX.2 klein 4B) via the pietrax-ai Worker.
+  // The browser never sees these; only the backend calls the Worker.
+  cloudflareAi: {
+    workerUrl: envStr('CLOUDFLARE_AI_WORKER_URL'),
+    workerSecret: envStr('CLOUDFLARE_AI_WORKER_SECRET'),
+  },
 } as const;
 
 export function requireConfig() {

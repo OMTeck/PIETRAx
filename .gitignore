@@ -26,3 +26,8 @@ dist-ssr
 server/dist
 server/uploads
 server/prisma/*.db
+
+# Cloudflare Worker (pietrax-ai)
+worker/.wrangler
+worker/node_modules
+worker/.dev.vars

@@ -1,0 +1,65 @@
+const MODEL = '@cf/black-forest-labs/flux-2-klein-4b';
+
+// FLUX returns raw base64 without a type; sniff it from the magic bytes so the
+// browser gets a correct data URL mime.
+function detectMime(b64) {
+  if (b64.startsWith('/9j/')) return 'image/jpeg';
+  if (b64.startsWith('iVBORw0KGgo')) return 'image/png';
+  if (b64.startsWith('R0lGOD')) return 'image/gif';
+  if (b64.startsWith('UklGR')) return 'image/webp';
+  return 'image/png';
+}
+
+export default {
+  async fetch(request, env) {
+    if (request.method !== 'POST') {
+      return new Response('Method Not Allowed', { status: 405 });
+    }
+
+    const secret = request.headers.get('x-ai-secret');
+    if (!secret || secret !== env.AI_SECRET) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+
+    let form;
+    try {
+      form = await request.formData();
+    } catch {
+      return new Response('Expected multipart/form-data', { status: 400 });
+    }
+
+    const prompt = form.get('prompt');
+    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+      return new Response('Missing or empty prompt', { status: 400 });
+    }
+
+    const image = form.get('input_image_0');
+    if (!image || typeof image === 'string') {
+      return new Response('Missing input_image_0 image', { status: 400 });
+    }
+
+    // FLUX.2 klein expects multipart form data with the image as binary bytes.
+    const out = new FormData();
+    out.append('prompt', prompt.trim());
+    out.append('input_image_0', new Blob([await image.arrayBuffer()], { type: image.type || 'image/png' }));
+
+    const serialized = new Response(out);
+    const body = serialized.body;
+    const contentType = serialized.headers.get('content-type') || 'multipart/form-data';
+
+    let result;
+    try {
+      result = await env.AI.run(MODEL, { multipart: { body, contentType } });
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      return new Response('AI model error: ' + msg, { status: 502 });
+    }
+
+    const b64 = result && result.image;
+    if (!b64) {
+      return new Response('AI model returned no image', { status: 502 });
+    }
+
+    return Response.json({ image: b64, mime: detectMime(b64) });
+  },
+}

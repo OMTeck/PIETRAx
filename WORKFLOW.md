@@ -130,8 +130,29 @@ git push origin main
 | `UPLOAD_DIR` | `/opt/render/project/src/server/uploads` |
 | `SEED_ADMIN_EMAIL` | `admin@pietra.dev` |
 | `SEED_ADMIN_PASSWORD` | `Admin@123456` (يُغيَّر بعد أول دخول) |
+| `CLOUDFLARE_AI_WORKER_URL` | رابط Worker الـ AI (مثال: `https://pietrax-ai.svu-acm.workers.dev`) |
+| `CLOUDFLARE_AI_WORKER_SECRET` | سر مشترك مع الـ Worker (يطابق `AI_SECRET` في Worker) |
 
 محليًا: تُخزَّن في `server/.env` (غير متتبَّع في git).
+
+---
+
+## 5.1 تعديل الصور بالذكاء الاصطناعي (FLUX.2 klein 4B)
+
+ميزة **Edit with AI** مدمجة داخل الـ Visualizer الموجود (رفع صورة غرفة → تعديلها بنص وصفي):
+
+```
+المتصفح → POST /api/visualizer/ai-edit (صورة ≤512px + prompt)
+        → خادم Node (يملك السر) → Cloudflare Worker (pietrax-ai)
+        → Workers AI binding → @cf/black-forest-labs/flux-2-klein-4b
+        → يرجع صورة data URL → تُعرض/تُقارن/تُستعاد في الواجهة
+```
+
+- **الأمان:** السر لا يظهر أبدًا في الواجهة ولا في `VITE_*`، ويبقى في الخادم والـ Worker فقط.
+- **الحد:** يجب أن تكون الصورة المدخلة **≤ 512×512** (يُصغّرها العميل تلقائيًا في `imagePreprocessor.compressImage`).
+- **الحفظ:** النتيجة تمر عبر سير العمل الموجود (`snapshotElement` + تحميل/مشاركة)، والصورة الأصلية تبقى للمقارنة والاستعادة.
+- **متغيرات Render:** `CLOUDFLARE_AI_WORKER_URL` و `CLOUDFLARE_AI_WORKER_SECRET` (انظر الجدول أعلاه).
+- **نشر الـ Worker:** `npx wrangler deploy --config worker/wrangler.toml` (مستقل عن نشر Render).
 
 ---
 
@@ -177,3 +198,6 @@ git push origin main
 | `buildCommand is required` | حقل البناء في مكان غير صحيح | ضع `buildCommand`/`startCommand` في `envSpecificDetails` |
 | 403 عند تسجيل الدخول | رمز CSRF مفقود | احصل على رمز من `/api/auth/csrf` أولًا |
 | النشر لم يبدأ | `autoDeploy: no` | فعّله في إعدادات الخدمة أو شغّل نشرًا يدويًا |
+| AI edit يرجع `AI_DISABLED` | متغيرات Worker غير مضبوطة على Render | أضف `CLOUDFLARE_AI_WORKER_URL` و `CLOUDFLARE_AI_WORKER_SECRET` |
+| خطأ 401 من الـ Worker | السر لا يطابق `AI_SECRET` | وحّد `CLOUDFLARE_AI_WORKER_SECRET` مع سر الـ Worker |
+| مخرجات AI بمقاس > 512 | صورة إدخال كبيرة | تأكد أن العميل يصغّر إلى 512px قبل الإرسال |

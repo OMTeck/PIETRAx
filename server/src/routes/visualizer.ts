@@ -4,6 +4,7 @@ import { asyncHandler, badRequest } from '../http/errors.js';
 import { validateBody } from '../lib/validate.js';
 import { visualizerSegmentLimiter } from '../http/rateLimit.js';
 import { segmentRoomImage } from '../services/roboflowService.js';
+import { editImageWithFlux } from '../services/cloudflareAiService.js';
 import { config } from '../config.js';
 
 export const visualizerRouter = Router();
@@ -54,6 +55,35 @@ visualizerRouter.post(
         confidence: Math.round(s.confidence * 1000) / 1000,
         points: s.points,
       })),
+    });
+  }),
+);
+
+const aiEditSchema = z.object({
+  prompt: z.string().min(1).max(1000),
+  image: z.string().max(MAX_IMAGE_BYTES * 2), // data URL base64 (~1.33x)
+  mime: z.string().max(64).default('image/jpeg'),
+});
+
+/**
+ * AI image editing for the visualizer upload flow, powered by FLUX.2 klein 4B
+ * on Cloudflare Workers AI (via the pietrax-ai Worker). The client sends a
+ * <=512px image + prompt; the backend holds the Worker secret and returns the
+ * generated image as a data URL.
+ */
+visualizerRouter.post(
+  '/ai-edit',
+  visualizerSegmentLimiter,
+  validateBody(aiEditSchema),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof aiEditSchema>;
+    const { buffer, mime } = dataUrlToBuffer(body.image);
+
+    const result = await editImageWithFlux(body.prompt, buffer, body.mime || mime);
+
+    res.json({
+      status: 'ok',
+      image: `data:${result.mime};base64,${result.imageBase64}`,
     });
   }),
 );

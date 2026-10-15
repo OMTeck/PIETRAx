@@ -16,6 +16,7 @@ import { pointsToClipPath, simplifyPolygon } from '@/lib/visualizer/geometry';
 import { snapshotElement, downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
 import type { RoomLayout, SurfaceKind, Step, VisMaterial, NormalizedPoint } from '@/lib/visualizer/types';
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
+import { AIEditControl } from '@/components/visualizer/AIEditControl';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 
 export function VisualizerPage() {
@@ -62,6 +63,8 @@ export function VisualizerPage() {
   const [compareMaterialId, setCompareMaterialId] = useState<string | null>(null);
   const [uploadMode, setUploadMode] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+  const [aiEditedImage, setAiEditedImage] = useState<string | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
   const [uploadSurface, setUploadSurface] = useState<string>('floor');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState<string>('All');
@@ -137,7 +140,9 @@ export function VisualizerPage() {
   const selectedMaterial = visMaterials.find((m) => m.id === selectedMaterialId);
   const compareMaterial = visMaterials.find((m) => m.id === compareMaterialId);
 
-  const roomImage = uploadedImage || selectedRoom?.previewImage || null;
+  const roomImage = (showOriginal && uploadedImage)
+    ? uploadedImage
+    : (aiEditedImage || uploadedImage || selectedRoom?.previewImage || null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -145,6 +150,8 @@ export function VisualizerPage() {
       const reader = new FileReader();
       reader.onload = (ev) => {
         setUploadedImage(ev.target?.result as string);
+        setAiEditedImage(null);
+        setShowOriginal(false);
         setUploadMode(true);
         setSelectedRoomId(null);
         setSelectedSurfaceId(null);
@@ -192,6 +199,16 @@ export function VisualizerPage() {
       (a, b) => (mapped[b]?.length ?? 0) - (mapped[a]?.length ?? 0),
     )[0];
     if (bestId) setUploadSurface(bestId);
+  };
+
+  const handleAiEditResult = (dataUrl: string) => {
+    setAiEditedImage(dataUrl);
+    setShowOriginal(false);
+  };
+
+  const handleRestoreOriginal = () => {
+    setAiEditedImage(null);
+    setShowOriginal(false);
   };
 
   const applySurfaceClip = (surfaceId: string): string => {
@@ -338,15 +355,35 @@ export function VisualizerPage() {
           </div>
 
           {uploadMode && (
-            <div className="flex flex-wrap items-center gap-3 mb-6">
-              <AIAnalyzeButton uploadedImage={roomImage} onSegments={handleAISegments} />
-              {editingSurfaceId && (
-                <button
-                  onClick={() => setEditingSurfaceId(null)}
-                  className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 text-stone-900 hover:bg-stone-900 hover:text-ivory transition-colors"
-                >
-                  <Check size={13} strokeWidth={1.5} /> {t('editArea')}
-                </button>
+            <div className="flex flex-col gap-3 mb-6">
+              <div className="flex flex-wrap items-center gap-3">
+                <AIAnalyzeButton uploadedImage={roomImage} onSegments={handleAISegments} />
+                {editingSurfaceId && (
+                  <button
+                    onClick={() => setEditingSurfaceId(null)}
+                    className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 text-stone-900 hover:bg-stone-900 hover:text-ivory transition-colors"
+                  >
+                    <Check size={13} strokeWidth={1.5} /> {t('editArea')}
+                  </button>
+                )}
+              </div>
+              <AIEditControl uploadedImage={uploadedImage || roomImage || ''} onResult={handleAiEditResult} />
+              {aiEditedImage && (
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-xs tracking-wider uppercase text-stone-500">{t('aiEditResult')}</span>
+                  <button
+                    onClick={() => setShowOriginal((v) => !v)}
+                    className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 text-stone-700 hover:border-stone-900 transition-colors"
+                  >
+                    {showOriginal ? t('aiEditResult') : t('originalImage')}
+                  </button>
+                  <button
+                    onClick={handleRestoreOriginal}
+                    className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 text-stone-700 hover:border-stone-900 transition-colors"
+                  >
+                    <RotateCcw size={13} strokeWidth={1.5} /> {t('restoreOriginal')}
+                  </button>
+                </div>
               )}
             </div>
           )}

@@ -280,6 +280,11 @@ export const publicApi = {
       '/api/visualizer/segment',
       body,
     ),
+  aiEditRoom: (body: { prompt: string; image: string; mime?: string }) =>
+    post<{ status: string; image: string }>(
+      '/api/visualizer/ai-edit',
+      body,
+    ),
   site: () => get<{ settings: SiteSettings }>('/api/site').then((r) => r.settings),
   submitQuote: (body: QuoteInput) => post<{ ok: boolean; id: string }>('/api/quotes', body),
   submitMessage: (body: MessageInput) => post<{ ok: boolean; id: string }>('/api/messages', body),
