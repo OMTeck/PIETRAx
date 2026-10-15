@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, badRequest } from '../http/errors.js';
 import { validateBody } from '../lib/validate.js';
-import { visualizerSegmentLimiter } from '../http/rateLimit.js';
+import { visualizerSegmentLimiter, visualizerAiEditLimiter } from '../http/rateLimit.js';
 import { segmentRoomImage } from '../services/roboflowService.js';
 import { editImageWithFlux } from '../services/cloudflareAiService.js';
 import { config } from '../config.js';
@@ -73,7 +73,7 @@ const aiEditSchema = z.object({
  */
 visualizerRouter.post(
   '/ai-edit',
-  visualizerSegmentLimiter,
+  visualizerAiEditLimiter,
   validateBody(aiEditSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof aiEditSchema>;

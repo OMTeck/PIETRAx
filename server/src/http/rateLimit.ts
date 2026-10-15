@@ -50,6 +50,14 @@ export const visualizerSegmentLimiter: RequestHandler = createLimiter({
   message: 'Too many image analyses. Please try again later.',
 });
 
+// AI image edits run automatically on each material pick, so allow more than
+// segmentation while still capping the external FLUX calls per visitor.
+export const visualizerAiEditLimiter: RequestHandler = createLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  message: 'Too many image edits. Please try again later.',
+});
+
 // Uploads are a common attack surface.
 export const uploadLimiter: RequestHandler = createLimiter({
   windowMs: 60 * 60 * 1000,

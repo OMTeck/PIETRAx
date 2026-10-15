@@ -37,6 +37,7 @@ export interface VisMaterial {
   id: string;
   slug: string;
   name: string;
+  enName: string;
   textureUrl: string;
   typeCode: string;
   typeLabel: string;
