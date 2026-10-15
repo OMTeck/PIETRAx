@@ -38,10 +38,18 @@ export default {
       return new Response('Missing input_image_0 image', { status: 400 });
     }
 
+    // Optional tuning knobs passed through to the model.
+    const guidance = form.get('guidance');
+    const width = form.get('width');
+    const height = form.get('height');
+
     // FLUX.2 klein expects multipart form data with the image as binary bytes.
     const out = new FormData();
     out.append('prompt', prompt.trim());
     out.append('input_image_0', new Blob([await image.arrayBuffer()], { type: image.type || 'image/png' }));
+    if (guidance !== null && guidance !== '') out.append('guidance', String(guidance));
+    if (width !== null && width !== '') out.append('width', String(width));
+    if (height !== null && height !== '') out.append('height', String(height));
 
     const serialized = new Response(out);
     const body = serialized.body;

@@ -18,13 +18,14 @@ export async function editImageWithFlux(
   imageBuffer: Buffer,
   mime: string,
 ): Promise<CloudflareAiResult> {
-  const { workerUrl, workerSecret } = config.cloudflareAi;
+  const { workerUrl, workerSecret, guidance } = config.cloudflareAi;
   if (!workerUrl || !workerSecret) {
     throw new AppError(503, 'AI image editing is not enabled.', 'AI_DISABLED');
   }
 
   const form = new FormData();
   form.append('prompt', prompt);
+  form.append('guidance', String(guidance));
   form.append('input_image_0', new Blob([imageBuffer], { type: mime || 'image/png' }), 'input.png');
 
   const controller = new AbortController();

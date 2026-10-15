@@ -18,6 +18,11 @@ function envInt(key: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function envFloat(key: string, fallback: number): number {
+  const value = Number.parseFloat(envStr(key));
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 function envBool(key: string, fallback = false): boolean {
   const value = envStr(key).toLowerCase();
   if (value === '') return fallback;
@@ -58,6 +63,9 @@ export const config = {
   cloudflareAi: {
     workerUrl: envStr('CLOUDFLARE_AI_WORKER_URL'),
     workerSecret: envStr('CLOUDFLARE_AI_WORKER_SECRET'),
+    // How strongly the model follows the prompt (higher = sticks closer to the
+    // instruction). ~4 preserved the room best in testing.
+    guidance: envFloat('CLOUDFLARE_AI_GUIDANCE', 5),
   },
 } as const;
 

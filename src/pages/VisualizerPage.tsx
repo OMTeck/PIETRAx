@@ -29,7 +29,7 @@ const SURFACE_NOUN_EN: Record<string, string> = {
 /** Builds the FLUX instruction from the chosen material + surface. */
 function buildMaterialPrompt(materialEnName: string, surfaceId: string): string {
   const noun = SURFACE_NOUN_EN[surfaceId] ?? 'surface';
-  return `Photorealistic interior photo: resurface the ${noun} with ${materialEnName}, keep the room layout, furniture, camera angle and lighting unchanged. High resolution, natural light.`;
+  return `Use image 0 as the base photo. Replace the ${noun} with ${materialEnName}, keeping the exact same room, walls, ceiling, furniture, camera angle, perspective and lighting. Photorealistic interior, high detail.`;
 }
 
 export function VisualizerPage() {
@@ -234,7 +234,7 @@ export function VisualizerPage() {
     setAiError(false);
     setAiEditedImage(null);
     try {
-      const compressed = await compressImage(uploadedImage, { maxDim: 512, quality: 0.85 });
+      const compressed = await compressImage(uploadedImage, { maxDim: 500, quality: 0.85 });
       const res = await publicApi.aiEditRoom({
         prompt: buildMaterialPrompt(material.enName || material.name, surfaceId),
         image: compressed.dataUrl,
