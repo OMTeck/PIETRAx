@@ -16,6 +16,11 @@ export function RouteProvider({ children }: { children: ReactNode }) {
   const [path, setPath] = useState<string>(getHashPath());
 
   useEffect(() => {
+    const p = window.location.pathname;
+    if (p === '/admin' || p.startsWith('/admin/')) {
+      window.location.replace('/#' + p + window.location.search);
+      return;
+    }
     const onHashChange = () => {
       setPath(getHashPath());
       window.scrollTo(0, 0);
