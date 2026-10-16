@@ -67,10 +67,12 @@ export async function segmentRoomImage(imageBuffer: Buffer, imageMime: string): 
   const timer = setTimeout(() => controller.abort(), config.roboflow.timeoutMs);
 
   try {
+    // The hosted inference endpoint expects a base64-encoded image body
+    // (form-urlencoded), not raw bytes.
     const res = await fetch(url.toString(), {
       method: 'POST',
-      headers: { 'Content-Type': imageMime || 'application/octet-stream' },
-      body: imageBuffer,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: imageBuffer.toString('base64'),
       signal: controller.signal,
     });
 
