@@ -13,20 +13,39 @@ export interface CompressedImage {
  */
 export async function compressImage(
   input: File | Blob | string,
-  { maxDim = 1280, quality = 0.82 } = {},
+  { maxDim = 1280, quality = 0.82, cropAspect }: { maxDim?: number; quality?: number; cropAspect?: number } = {},
 ): Promise<CompressedImage> {
   return new Promise((resolve, reject) => {
     const src = typeof input === 'string' ? input : URL.createObjectURL(input);
     const img = new Image();
+    // Remote (preset) photos must be fetched CORS-enabled so the canvas stays
+    // untainted and toBlob() does not throw a SecurityError.
+    if (typeof input === 'string' && /^https?:/i.test(input)) img.crossOrigin = 'anonymous';
     img.onload = () => {
       if (typeof input === 'string') {
         // nothing to revoke for a data URL
       } else {
         URL.revokeObjectURL(src);
       }
-      const scale = Math.min(1, maxDim / (img.naturalWidth || 1), maxDim / (img.naturalHeight || 1));
-      const w = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
-      const h = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+      const nw = img.naturalWidth || 1;
+      const nh = img.naturalHeight || 1;
+      // Optional center-crop so the AI output aspect matches the display box.
+      let sx = 0;
+      let sy = 0;
+      let sw = nw;
+      let sh = nh;
+      if (cropAspect && nw > 0 && nh > 0) {
+        if (nw / nh > cropAspect) {
+          sw = Math.round(nh * cropAspect);
+          sx = Math.round((nw - sw) / 2);
+        } else {
+          sh = Math.round(nw / cropAspect);
+          sy = Math.round((nh - sh) / 2);
+        }
+      }
+      const scale = Math.min(1, maxDim / sw, maxDim / sh);
+      const w = Math.max(1, Math.round(sw * scale));
+      const h = Math.max(1, Math.round(sh * scale));
       const c = document.createElement('canvas');
       c.width = w;
       c.height = h;
@@ -35,7 +54,7 @@ export async function compressImage(
         reject(new Error('Canvas unavailable'));
         return;
       }
-      ctx.drawImage(img, 0, 0, w, h);
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
       c.toBlob(
         (blob) => {
           if (!blob) {

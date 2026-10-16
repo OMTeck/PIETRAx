@@ -26,9 +26,8 @@ const SURFACE_NOUN_EN: Record<string, string> = {
   countertop: 'countertop and cabinetry',
 };
 
-/** Builds the FLUX instruction from the chosen material + surface. */
-function buildMaterialPrompt(materialEnName: string, surfaceId: string): string {
-  const noun = SURFACE_NOUN_EN[surfaceId] ?? 'surface';
+/** Builds the FLUX instruction from the chosen material + surface noun. */
+function buildMaterialPrompt(materialEnName: string, noun: string): string {
   return `Use image 0 as the base photo. Replace the ${noun} with ${materialEnName}, keeping the exact same room, walls, ceiling, furniture, camera angle, perspective and lighting. Photorealistic interior, high detail.`;
 }
 
@@ -156,14 +155,46 @@ export function VisualizerPage() {
   const selectedMaterial = visMaterials.find((m) => m.id === selectedMaterialId);
   const compareMaterial = visMaterials.find((m) => m.id === compareMaterialId);
 
-  const roomImage = (showOriginal && uploadedImage)
-    ? uploadedImage
-    : (aiEditedImage || uploadedImage || selectedRoom?.previewImage || null);
+  // The base photo for AI (upload) or the preset room's photo (existing rooms).
+  const originalImage = uploadedImage ?? selectedRoom?.previewImage ?? null;
+  const roomImage = (showOriginal && originalImage)
+    ? originalImage
+    : (aiEditedImage || originalImage);
 
   // When an AI edit exists, the canvas shows that image instead of the CSS
   // texture overlay (which stays as the instant preview / fallback).
   const aiResultActive = !!aiEditedImage;
-  const resultSrc = showOriginal && uploadedImage ? uploadedImage : roomImage;
+  const resultSrc = roomImage;
+
+  // Preset rooms render at a fixed 16:10 box (their clip-paths were authored for
+  // it); uploads keep the photo's own aspect. AI edits match that display box.
+  const displayAspect = uploadMode && imageAspect ? imageAspect : 16 / 10;
+
+  /** FLUX noun for a surface: upload surfaces by id, presets by their name. */
+  const nounForSurface = (surfaceId: string): string => {
+    if (SURFACE_NOUN_EN[surfaceId]) return SURFACE_NOUN_EN[surfaceId];
+    const name = (selectedRoom?.surfaces.find((s) => s.id === surfaceId)?.nameEn || '').toLowerCase();
+    if (name.includes('floor')) return 'floor';
+    if (name.includes('ceiling')) return 'ceiling';
+    if (name.includes('counter') || name.includes('island') || name.includes('cabinet')) return 'countertop and cabinetry';
+    if (name.includes('wall')) return 'wall';
+    return 'surface';
+  };
+
+  /** Maps a detected surfaceType to the active surface id (upload id or preset id). */
+  const surfaceIdForType = (type: string): string | null => {
+    const k = type.toLowerCase();
+    if (uploadMode) return SURFACE_NOUN_EN[k] ? k : null;
+    const match = selectedRoom?.surfaces.find((s) => {
+      const n = (s.nameEn || '').toLowerCase();
+      if (k === 'floor') return n.includes('floor');
+      if (k === 'wall') return n.includes('wall');
+      if (k === 'ceiling') return n.includes('ceiling');
+      if (k === 'countertop') return n.includes('counter') || n.includes('island') || n.includes('cabinet');
+      return false;
+    });
+    return match?.id ?? null;
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -203,15 +234,13 @@ export function VisualizerPage() {
   const handleAISegments = (result: { segments: { surfaceType: string; points: { x: number; y: number }[] }[]; width: number; height: number }) => {
     const mapped: Partial<Record<string, NormalizedPoint[]>> = {};
     for (const seg of result.segments) {
-      const surfaceId = seg.surfaceType.toLowerCase();
-      if (surfaceId === 'floor' || surfaceId === 'wall' || surfaceId === 'countertop') {
-        if (seg.points.length >= 3) {
-          const pts = seg.points.map((p) => ({
-            x: p.x / result.width,
-            y: p.y / result.height,
-          }));
-          mapped[surfaceId] = simplifyPolygon(pts, 0.02, 30);
-        }
+      const surfaceId = surfaceIdForType(seg.surfaceType);
+      if (surfaceId && seg.points.length >= 3) {
+        const pts = seg.points.map((p) => ({
+          x: p.x / result.width,
+          y: p.y / result.height,
+        }));
+        mapped[surfaceId] = simplifyPolygon(pts, 0.02, 30);
       }
     }
     setAiSegments((prev) => ({ ...prev, ...mapped }));
@@ -229,14 +258,19 @@ export function VisualizerPage() {
    * The CSS texture overlay stays as an instant preview/fallback.
    */
   const runAutoAiEdit = async (material: VisMaterial, surfaceId: string) => {
-    if (!uploadedImage) return;
+    const base = uploadedImage ?? selectedRoom?.previewImage ?? null;
+    if (!base) return;
     setAiBusy(true);
     setAiError(false);
     setAiEditedImage(null);
     try {
-      const compressed = await compressImage(uploadedImage, { maxDim: 500, quality: 0.85 });
+      const compressed = await compressImage(base, {
+        maxDim: 500,
+        quality: 0.85,
+        cropAspect: uploadMode ? undefined : displayAspect,
+      });
       const res = await publicApi.aiEditRoom({
-        prompt: buildMaterialPrompt(material.enName || material.name, surfaceId),
+        prompt: buildMaterialPrompt(material.enName || material.name, nounForSurface(surfaceId)),
         image: compressed.dataUrl,
         mime: 'image/jpeg',
       });
@@ -258,6 +292,8 @@ export function VisualizerPage() {
   };
 
   const applySurfaceClip = (surfaceId: string): string => {
+    const seg = aiSegments[surfaceId];
+    if (seg && seg.length >= 3) return pointsToClipPath(seg);
     if (uploadMode && imageAspect) {
       const pts = polygonFor(surfaceId);
       if (pts.length >= 3) return pointsToClipPath(pts);
@@ -364,6 +400,11 @@ export function VisualizerPage() {
                     setSelectedRoomId(room.id);
                     setUploadMode(false);
                     setUploadedImage(null);
+                    setAiEditedImage(null);
+                    setAiError(false);
+                    setShowOriginal(false);
+                    setAiSegments({});
+                    setEditingSurfaceId(null);
                     setStep('surface');
                   }}
                   className="group relative block w-full overflow-hidden"
@@ -400,22 +441,22 @@ export function VisualizerPage() {
             )}
           </div>
 
-          {uploadMode && (
-            <div className="flex flex-wrap items-center gap-3 mb-3">
-              <AIAnalyzeButton uploadedImage={roomImage} onSegments={handleAISegments} />
-              {editingSurfaceId && (
-                <button
-                  onClick={() => setEditingSurfaceId(null)}
-                  className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 text-stone-900 hover:bg-stone-900 hover:text-ivory transition-colors"
-                >
-                  <Check size={13} strokeWidth={1.5} /> {t('editArea')}
-                </button>
-              )}
-            </div>
-          )}
-          {uploadMode && (
-            <p className="text-xs text-stone-500 mb-6">{t('aiAutoHint')}</p>
-          )}
+          <div className="flex flex-wrap items-center gap-3 mb-3">
+            <AIAnalyzeButton
+              uploadedImage={roomImage}
+              cropAspect={uploadMode ? undefined : displayAspect}
+              onSegments={handleAISegments}
+            />
+            {uploadMode && editingSurfaceId && (
+              <button
+                onClick={() => setEditingSurfaceId(null)}
+                className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 text-stone-900 hover:bg-stone-900 hover:text-ivory transition-colors"
+              >
+                <Check size={13} strokeWidth={1.5} /> {t('editArea')}
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-stone-500 mb-6">{t('aiAutoHint')}</p>
 
           {editingSurfaceId && uploadMode ? (
             <div className="mb-6 border border-stone-300 bg-stone-100 p-3">
@@ -522,8 +563,8 @@ export function VisualizerPage() {
                 onClick={() => {
                   setSelectedMaterialId(m.id);
                   setStep('result');
-                  if (uploadMode && uploadedImage) {
-                    void runAutoAiEdit(m, selectedSurfaceId || 'floor');
+                  if (uploadedImage || selectedRoom?.previewImage) {
+                    void runAutoAiEdit(m, selectedSurfaceId || surfaces[0]?.id || 'floor');
                   }
                 }}
                 className={`group relative overflow-hidden border-2 transition-all ${

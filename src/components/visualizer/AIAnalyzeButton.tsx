@@ -5,13 +5,14 @@ import { publicApi, type PubAISegment } from '@/lib/public';
 import { compressImage } from '@/lib/visualizer/imagePreprocessor';
 
 interface AIAnalyzeButtonProps {
-  uploadedImage: string; // data URL of the current upload
+  uploadedImage: string; // data URL (upload) or remote URL (preset room)
   disabled?: boolean;
+  cropAspect?: number; // center-crop before analysis so coords match the display box
   onSegments: (result: { segments: PubAISegment[]; width: number; height: number }) => void;
   onBusyChange?: (busy: boolean) => void;
 }
 
-export function AIAnalyzeButton({ uploadedImage, disabled, onSegments, onBusyChange }: AIAnalyzeButtonProps) {
+export function AIAnalyzeButton({ uploadedImage, disabled, cropAspect, onSegments, onBusyChange }: AIAnalyzeButtonProps) {
   const { t } = useLang();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -22,7 +23,7 @@ export function AIAnalyzeButton({ uploadedImage, disabled, onSegments, onBusyCha
     setError(false);
     onBusyChange?.(true);
     try {
-      const compressed = await compressImage(uploadedImage);
+      const compressed = await compressImage(uploadedImage, cropAspect ? { cropAspect } : undefined);
       const res = await publicApi.segmentRoom({ image: compressed.dataUrl, mime: 'image/jpeg' });
       onSegments({ segments: res.segments, width: res.width, height: res.height });
     } catch {
