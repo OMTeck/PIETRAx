@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Save, Sparkles, Wand2, SlidersHorizontal, ShieldCheck, Plus, Trash2 } from 'lucide-react';
+import { Save, Sparkles, Wand2, SlidersHorizontal, ShieldCheck, Plus, Trash2, Cpu, PlugZap } from 'lucide-react';
 import { visualizerApi } from '@/admin/server';
 import { useAsync } from '@/admin/lib';
-import { Button, Input, Field, Toggle, Textarea, Card, Loading, useToast, cx } from '@/admin/ui';
-import type { VisualizerSettings, VisualizerSurfaceSetting, VisualizerSurfacePoint } from '@/admin/types';
+import { Button, Input, Field, Toggle, Textarea, Select, Card, Loading, useToast, cx } from '@/admin/ui';
+import type { VisualizerSettings, VisualizerSurfaceSetting, VisualizerSurfacePoint, VisionProvider, VisionProviderMeta, VisionProviderType } from '@/admin/types';
 
 function num(v: string, fallback = 0): number {
   const n = Number.parseFloat(v);
@@ -43,8 +43,10 @@ function JsonArea({ value, onChange, rows = 4, placeholder }: { value: unknown; 
 export function VisualizerSettingsPanel() {
   const { toast } = useToast();
   const { data, loading, error } = useAsync<VisualizerSettings>(() => visualizerApi.getSettings(), []);
+  const { data: meta } = useAsync<VisionProviderMeta[]>(() => visualizerApi.visionMeta(), []);
   const [s, setS] = useState<VisualizerSettings | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (data && !s) setS(data);
@@ -60,6 +62,25 @@ export function VisualizerSettingsPanel() {
   const setFeatures = (patch: Partial<VisualizerSettings['features']>) => setS({ ...s, features: { ...s.features, ...patch } });
   const setBehavior = (patch: Partial<VisualizerSettings['behavior']>) => setS({ ...s, behavior: { ...s.behavior, ...patch } });
   const setSurfaces = (surfaces: VisualizerSurfaceSetting[]) => setBehavior({ surfaces });
+  const setVision = (patch: Partial<VisualizerSettings['vision']>) => setS({ ...s, vision: { ...s.vision, ...patch } });
+  const pm = (t: VisionProviderType) => (meta ?? []).find((m) => m.type === t);
+  const setProviders = (providers: VisionProvider[]) => setVision({ providers });
+  const updateProvider = (idx: number, patch: Partial<VisionProvider>) =>
+    setProviders(s.vision.providers.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
+
+  async function testProvider(idx: number) {
+    const provider = s?.vision.providers[idx];
+    if (!provider) return;
+    setTestingId(provider.id);
+    try {
+      const result = await visualizerApi.testVisionProvider(provider);
+      toast(result.message, result.ok ? 'success' : 'error');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Connection test failed.', 'error');
+    } finally {
+      setTestingId(null);
+    }
+  }
 
   async function save() {
     if (!s) return;
@@ -125,6 +146,132 @@ export function VisualizerSettingsPanel() {
             <Field label="Class → surface map" hint='JSON: { "detected-class": "FLOOR" }. Unmapped classes are upper-cased as-is.'>
               <JsonArea value={s.analysis.classMap} onChange={(v) => setAnalysis({ classMap: (v as Record<string, string>) ?? {} })} placeholder='{ "floor": "FLOOR", "wall": "WALL" }' />
             </Field>
+          </div>
+        </div>
+      </Card>
+
+      {/* Vision LLM providers */}
+      <Card
+        title={<span className="flex items-center gap-2"><Cpu className="h-4 w-4 text-stone-500" /> Vision LLM providers (image understanding)</span>}
+        actions={<Toggle checked={s.vision.enabled} onChange={(v) => setVision({ enabled: v })} label="Use vision LLM" />}
+      >
+        <p className="mb-4 text-xs text-stone-500">
+          Add your own vision model (OpenAI, Anthropic, Google Gemini, or any OpenAI-compatible endpoint) with its own API key
+          and route surface analysis through it. Roboflow above acts as the fallback. Keys are stored server-side and only ever
+          shown masked. Leave a key field as-is to keep the stored value; clear it to enter a new one.
+        </p>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Default vision model" hint="Used for surface analysis when enabled.">
+            <Select value={s.vision.defaultProviderId} onChange={(e) => setVision({ defaultProviderId: e.target.value })}>
+              <option value="">— none —</option>
+              {s.vision.providers.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}{p.modelId ? ` — ${p.modelId}` : ''}</option>
+              ))}
+            </Select>
+          </Field>
+          <div className="flex items-end pb-1">
+            <Toggle checked={s.vision.fallbackToRoboflow} onChange={(v) => setVision({ fallbackToRoboflow: v })} label="Fall back to Roboflow on error" />
+          </div>
+        </div>
+
+        <div className="mt-5">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-stone-800">Providers</h3>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setProviders([
+                  ...s.vision.providers,
+                  {
+                    id: `vp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+                    name: 'New provider',
+                    providerType: 'openai',
+                    modelId: '',
+                    baseUrl: '',
+                    apiKey: '',
+                    supportsVision: true,
+                    enabled: true,
+                    timeoutMs: 60000,
+                    maxImageDim: 1024,
+                  },
+                ])
+              }
+            >
+              <Plus className="h-3.5 w-3.5" /> Add provider
+            </Button>
+          </div>
+
+          {s.vision.providers.length === 0 && (
+            <p className="text-sm text-stone-400">No vision providers yet. Add one to enable image understanding.</p>
+          )}
+
+          <div className="space-y-3">
+            {s.vision.providers.map((provider, idx) => (
+              <div key={provider.id} className="rounded border border-stone-200 p-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Display name">
+                    <Input value={provider.name} onChange={(e) => updateProvider(idx, { name: e.target.value })} />
+                  </Field>
+                  <Field label="Provider type">
+                    <Select
+                      value={provider.providerType}
+                      onChange={(e) => {
+                        const type = e.target.value as VisionProviderType;
+                        const hint = pm(type)?.defaultBaseUrl ?? '';
+                        updateProvider(idx, { providerType: type, baseUrl: provider.baseUrl || hint });
+                      }}
+                    >
+                      {(meta ?? []).map((m) => (
+                        <option key={m.type} value={m.type}>{m.label}</option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="Model ID" hint={pm(provider.providerType)?.modelHint}>
+                    <Input value={provider.modelId} onChange={(e) => updateProvider(idx, { modelId: e.target.value })} placeholder={pm(provider.providerType)?.modelHint} />
+                  </Field>
+                  <Field label="API base URL" hint={pm(provider.providerType)?.defaultBaseUrl || 'Required for custom endpoints'}>
+                    <Input value={provider.baseUrl} onChange={(e) => updateProvider(idx, { baseUrl: e.target.value })} placeholder={pm(provider.providerType)?.defaultBaseUrl} />
+                  </Field>
+                  <div className="sm:col-span-2">
+                    <Field label="API key" hint={`Shown masked. Leave as-is to keep the stored key.${pm(provider.providerType)?.keyHint ? ` Looks like: ${pm(provider.providerType)?.keyHint}` : ''}`}>
+                      <Input value={provider.apiKey} onChange={(e) => updateProvider(idx, { apiKey: e.target.value })} placeholder="••••••••" autoComplete="off" />
+                    </Field>
+                  </div>
+                  <Field label="Timeout (ms)">
+                    <Input type="number" value={String(provider.timeoutMs)} onChange={(e) => updateProvider(idx, { timeoutMs: num(e.target.value, 60000) })} />
+                  </Field>
+                  <Field label="Max image size (px)" hint="Long edge sent to the provider.">
+                    <Input type="number" value={String(provider.maxImageDim)} onChange={(e) => updateProvider(idx, { maxImageDim: num(e.target.value, 1024) })} />
+                  </Field>
+                  <div className="flex flex-wrap items-center gap-4 sm:col-span-2">
+                    <Toggle checked={provider.supportsVision} onChange={(v) => updateProvider(idx, { supportsVision: v })} label="Vision-capable" />
+                    <Toggle checked={provider.enabled} onChange={(v) => updateProvider(idx, { enabled: v })} label="Enabled" />
+                    <div className="ml-auto flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        loading={testingId === provider.id}
+                        onClick={() => void testProvider(idx)}
+                      >
+                        <PlugZap className="h-3.5 w-3.5" /> Test connection
+                      </Button>
+                      <button
+                        type="button"
+                        onClick={() => setProviders(s.vision.providers.filter((_, i) => i !== idx))}
+                        className="rounded p-1.5 text-stone-400 hover:bg-red-50 hover:text-red-700"
+                        title="Remove provider"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </Card>

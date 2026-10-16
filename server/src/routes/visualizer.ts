@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { asyncHandler, badRequest } from '../http/errors.js';
 import { validateBody } from '../lib/validate.js';
 import { visualizerSegmentLimiter, visualizerAiEditLimiter } from '../http/rateLimit.js';
-import { segmentRoomImage } from '../services/roboflowService.js';
+import { runSurfaceAnalysis } from '../services/segmentationService.js';
 import { editImageWithFlux } from '../services/cloudflareAiService.js';
 import { getPublicVisualizerConfig } from '../services/visualizerSettings.js';
 
@@ -33,7 +33,9 @@ function dataUrlToBuffer(dataUrl: string): { buffer: Buffer; mime: string } {
  * Public, cloud-backed segmentation for the room visualizer upload flow.
  * The client sends a compressed image (never the API key) and receives
  * normalized polygons {surfaceType, confidence, points[]} back.
- * The backend alone holds the Roboflow credentials (see config.roboflow).
+ * The backend alone holds every provider credential: the admin-configured
+ * vision LLM (see visionProviderService) and/or Roboflow (see
+ * visualizerSettings.analysis).
  */
 visualizerRouter.post(
   '/segment',
@@ -43,10 +45,11 @@ visualizerRouter.post(
     const body = req.body as z.infer<typeof segmentSchema>;
     const { buffer, mime } = dataUrlToBuffer(body.image);
 
-    const result = await segmentRoomImage(buffer, body.mime || mime);
+    const { result, engine } = await runSurfaceAnalysis(buffer, body.mime || mime);
 
     res.json({
       status: 'ok',
+      engine,
       width: result.width,
       height: result.height,
       segments: result.segments.map((s) => ({

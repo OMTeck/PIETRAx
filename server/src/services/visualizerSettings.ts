@@ -33,6 +33,26 @@ const surfaceSchema = z.object({
   polygon: z.array(normalizedPointSchema).min(3).max(128),
 });
 
+/** Vision LLM providers usable for image understanding / surface analysis.
+ *  Distinct from the FLUX edit pipeline, which *generates* images. */
+export const VISION_PROVIDER_TYPES = ['openai', 'anthropic', 'google', 'custom'] as const;
+export type VisionProviderType = (typeof VISION_PROVIDER_TYPES)[number];
+
+export const visionProviderSchema = z.object({
+  id: z.string().min(1).max(60),
+  name: z.string().min(1).max(80),
+  providerType: z.enum(['openai', 'anthropic', 'google', 'custom']),
+  modelId: z.string().min(1).max(200),
+  baseUrl: z.string().max(300).default(''),
+  apiKey: z.string().max(400).default(''),
+  supportsVision: z.boolean().default(true),
+  enabled: z.boolean().default(true),
+  timeoutMs: z.coerce.number().int().min(1000).max(120000).default(60000),
+  maxImageDim: z.coerce.number().int().min(256).max(4096).default(1024),
+});
+
+export type VisionProvider = z.infer<typeof visionProviderSchema>;
+
 export const visualizerSettingsSchema = z.object({
   enabled: z.boolean().default(true),
   features: z
@@ -77,6 +97,14 @@ export const visualizerSettingsSchema = z.object({
       simplifyTolerance: z.coerce.number().min(0).max(0.5).default(0.02),
       simplifyMinPoints: z.coerce.number().int().min(4).max(500).default(30),
       surfaces: z.array(surfaceSchema).max(12).default([]),
+    })
+    .default({}),
+  vision: z
+    .object({
+      enabled: z.boolean().default(false),
+      fallbackToRoboflow: z.boolean().default(true),
+      defaultProviderId: z.string().max(60).default(''),
+      providers: z.array(visionProviderSchema).max(12).default([]),
     })
     .default({}),
 });
@@ -175,6 +203,12 @@ function buildDefaults(): VisualizerSettings {
       simplifyMinPoints: 30,
       surfaces: DEFAULT_SURFACES.map((s) => ({ ...s, polygon: s.polygon.map((p) => ({ ...p })) })),
     },
+    vision: {
+      enabled: false,
+      fallbackToRoboflow: true,
+      defaultProviderId: '',
+      providers: [],
+    },
   };
 }
 
@@ -243,7 +277,26 @@ export function maskForAdmin(value: VisualizerSettings) {
     ...value,
     analysis: { ...value.analysis, apiKey: value.analysis.apiKey ? SECRET_MASK : '' },
     edit: { ...value.edit, workerSecret: value.edit.workerSecret ? SECRET_MASK : '' },
+    vision: {
+      ...value.vision,
+      providers: value.vision.providers.map((p) => ({ ...p, apiKey: p.apiKey ? SECRET_MASK : '' })),
+    },
   };
+}
+
+/**
+ * Resolves an admin-supplied provider payload whose apiKey may carry the mask.
+ * A blank or masked key means "keep the stored key for this id"; an explicit
+ * value replaces it. Deletion is only ever via removing the provider entry.
+ */
+export async function resolveVisionProvider(
+  incoming: Omit<VisionProvider, 'apiKey'> & { apiKey?: string },
+): Promise<VisionProvider> {
+  const current = await getVisualizerSettings();
+  const existing = current.vision.providers.find((p) => p.id === incoming.id);
+  const key = incoming.apiKey ?? '';
+  const apiKey = !key || key === SECRET_MASK ? (existing?.apiKey ?? '') : key;
+  return { ...incoming, apiKey } as VisionProvider;
 }
 
 /**
@@ -255,6 +308,13 @@ export async function updateVisualizerSettings(payload: unknown, updatedById: st
   const merged = deepMerge(current, payload ?? {}) as VisualizerSettings;
   if (merged.analysis.apiKey === SECRET_MASK) merged.analysis.apiKey = current.analysis.apiKey;
   if (merged.edit.workerSecret === SECRET_MASK) merged.edit.workerSecret = current.edit.workerSecret;
+  if (merged.vision?.providers) {
+    merged.vision.providers = merged.vision.providers.map((p) => {
+      const old = current.vision.providers.find((x) => x.id === p.id);
+      if (!p.apiKey || p.apiKey === SECRET_MASK) return { ...p, apiKey: old?.apiKey ?? '' };
+      return p;
+    });
+  }
   const parsed = visualizerSettingsSchema.parse(merged) as VisualizerSettings;
   await persist(parsed, updatedById);
   return parsed;
@@ -262,11 +322,14 @@ export async function updateVisualizerSettings(payload: unknown, updatedById: st
 
 export async function getPublicVisualizerConfig(): Promise<PublicVisualizerConfig> {
   const s = await getVisualizerSettings();
+  const roboflowReady = s.analysis.enabled && Boolean(s.analysis.apiKey && s.analysis.model);
+  const visionReady =
+    s.vision.enabled && s.vision.providers.some((p) => p.enabled && p.supportsVision && Boolean(p.apiKey));
   return {
     enabled: s.enabled,
     features: s.features,
     analysis: {
-      enabled: s.analysis.enabled && Boolean(s.analysis.apiKey && s.analysis.model),
+      enabled: roboflowReady || visionReady,
       autoApply: s.analysis.autoApply,
     },
     edit: {

@@ -10,7 +10,10 @@ import {
   getVisualizerSettings,
   maskForAdmin,
   updateVisualizerSettings,
+  resolveVisionProvider,
+  visionProviderSchema,
 } from '../../services/visualizerSettings.js';
+import { testVisionProvider, VISION_PROVIDER_META } from '../../services/visionProviderService.js';
 import type { Prisma, RoomType, SurfaceType } from '@prisma/client';
 
 const roomTypes: RoomType[] = ['KITCHEN', 'BATHROOM', 'LIVING_ROOM', 'BEDROOM', 'OFFICE', 'HOTEL_LOBBY', 'OUTDOOR'];
@@ -116,6 +119,29 @@ visualizerRouter.put(
       metadata: { scope: 'settings' },
     });
     res.json({ settings: maskForAdmin(settings) });
+  }),
+);
+
+// --- Vision LLM providers -------------------------------------------------
+
+visualizerRouter.get(
+  '/vision/meta',
+  asyncHandler(async (_req, res) => {
+    res.json({ types: Object.values(VISION_PROVIDER_META) });
+  }),
+);
+
+/**
+ * Liveness check for a provider the admin is configuring. The browser may
+ * send the mask instead of a stored key; the real key never leaves the server.
+ */
+visualizerRouter.post(
+  '/vision/test',
+  validateBody(visionProviderSchema),
+  asyncHandler(async (req, res) => {
+    const provider = await resolveVisionProvider(req.body as Parameters<typeof resolveVisionProvider>[0]);
+    const result = await testVisionProvider(provider);
+    res.json(result);
   }),
 );
 

@@ -38,7 +38,7 @@ interface RoboflowApiResponse {
  * supply an explicit class→surface map (e.g. { "sofa": "FLOOR" }); anything
  * unmapped falls back to an upper-cased, sanitized version of the label.
  */
-function normalizeSurfaceType(label: string, classMap: Record<string, string>): string {
+export function normalizeSurfaceType(label: string, classMap: Record<string, string>): string {
   const key = label.trim();
   const mapped = classMap[key] ?? classMap[key.toLowerCase()] ?? classMap[key.toUpperCase()];
   const source = mapped ?? key;

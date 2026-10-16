@@ -327,6 +327,36 @@ export interface VisualizerSurfaceSetting {
   polygon: VisualizerSurfacePoint[];
 }
 
+export type VisionProviderType = 'openai' | 'anthropic' | 'google' | 'custom';
+
+export interface VisionProvider {
+  id: string;
+  name: string;
+  providerType: VisionProviderType;
+  modelId: string;
+  baseUrl: string;
+  /** Masked on load (`••••••••` when set, empty when not). Never a real key. */
+  apiKey: string;
+  supportsVision: boolean;
+  enabled: boolean;
+  timeoutMs: number;
+  maxImageDim: number;
+}
+
+export interface VisionProviderMeta {
+  type: VisionProviderType;
+  label: string;
+  defaultBaseUrl: string;
+  modelHint: string;
+  keyHint: string;
+}
+
+export interface VisionTestResult {
+  ok: boolean;
+  message: string;
+  latencyMs: number;
+}
+
 export interface VisualizerSettings {
   enabled: boolean;
   features: {
@@ -364,6 +394,12 @@ export interface VisualizerSettings {
     simplifyTolerance: number;
     simplifyMinPoints: number;
     surfaces: VisualizerSurfaceSetting[];
+  };
+  vision: {
+    enabled: boolean;
+    fallbackToRoboflow: boolean;
+    defaultProviderId: string;
+    providers: VisionProvider[];
   };
 }
 
