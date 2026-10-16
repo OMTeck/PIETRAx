@@ -37,8 +37,8 @@ export const VISION_PROVIDER_META: Record<VisionProviderType, VisionProviderMeta
   google: {
     type: 'google',
     label: 'Google Gemini',
-    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1',
-    modelHint: 'gemini-1.5-flash',
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    modelHint: 'gemini-2.5-flash',
     keyHint: 'AIzaâ€¦',
   },
   custom: {
