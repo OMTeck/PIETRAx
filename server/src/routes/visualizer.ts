@@ -5,7 +5,7 @@ import { validateBody } from '../lib/validate.js';
 import { visualizerSegmentLimiter, visualizerAiEditLimiter } from '../http/rateLimit.js';
 import { segmentRoomImage } from '../services/roboflowService.js';
 import { editImageWithFlux } from '../services/cloudflareAiService.js';
-import { config } from '../config.js';
+import { getPublicVisualizerConfig } from '../services/visualizerSettings.js';
 
 export const visualizerRouter = Router();
 
@@ -88,11 +88,11 @@ visualizerRouter.post(
   }),
 );
 
-/** Lets the SPA decide whether to show the "Analyze with AI" button. */
+/** Lets the SPA decide whether/which visualizer features to show. */
 visualizerRouter.get(
   '/config',
   asyncHandler(async (_req, res) => {
-    res.json({ ai: { enabled: config.roboflow.enabled && Boolean(config.roboflow.apiKey && config.roboflow.model) } });
+    res.json(await getPublicVisualizerConfig());
   }),
 );
 

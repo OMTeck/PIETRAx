@@ -6,6 +6,11 @@ import { validateBody } from '../../lib/validate.js';
 import { requirePermission } from '../../http/auth.js';
 import { PERM } from '../../authz/permissions.js';
 import { recordAudit, AUDIT } from '../../lib/audit.js';
+import {
+  getVisualizerSettings,
+  maskForAdmin,
+  updateVisualizerSettings,
+} from '../../services/visualizerSettings.js';
 import type { Prisma, RoomType, SurfaceType } from '@prisma/client';
 
 const roomTypes: RoomType[] = ['KITCHEN', 'BATHROOM', 'LIVING_ROOM', 'BEDROOM', 'OFFICE', 'HOTEL_LOBBY', 'OUTDOOR'];
@@ -86,6 +91,33 @@ function serializeRoom(r: Prisma.VisualizerRoomGetPayload<{ include: typeof room
 export const visualizerRouter = Router();
 
 visualizerRouter.use(requirePermission(PERM.visualizerManage));
+
+// --- Global settings (AI + behavior) -------------------------------------
+
+visualizerRouter.get(
+  '/settings',
+  asyncHandler(async (_req, res) => {
+    const settings = await getVisualizerSettings();
+    res.json({ settings: maskForAdmin(settings) });
+  }),
+);
+
+visualizerRouter.put(
+  '/settings',
+  asyncHandler(async (req, res) => {
+    if (Array.isArray(req.body) || req.body === null || typeof req.body !== 'object') {
+      throw notFound('Invalid settings payload');
+    }
+    const settings = await updateVisualizerSettings(req.body, req.authUser.id);
+    await recordAudit(req, {
+      action: AUDIT.VISUALIZER_UPDATED,
+      resourceType: 'SiteSetting',
+      resourceId: 'visualizer',
+      metadata: { scope: 'settings' },
+    });
+    res.json({ settings: maskForAdmin(settings) });
+  }),
+);
 
 // --- Rooms ---------------------------------------------------------------
 

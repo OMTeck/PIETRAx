@@ -5,6 +5,7 @@ import { useAsync, slugify } from '@/admin/lib';
 import {
   Button, Input, Select, Field, PageHeader, Card, Loading, EmptyState, ConfirmDialog, Toggle, useToast, cx,
 } from '@/admin/ui';
+import { VisualizerSettingsPanel } from '@/admin/pages/VisualizerSettings';
 import type { RoomRow, RoomPayload, SurfaceType, RoomType, VisualizerMaterialRow } from '@/admin/types';
 
 const ROOM_TYPES: RoomType[] = ['KITCHEN', 'BATHROOM', 'LIVING_ROOM', 'BEDROOM', 'OFFICE', 'HOTEL_LOBBY', 'OUTDOOR'];
@@ -15,9 +16,16 @@ export function VisualizerPage() {
   const { data: rooms, loading, error, reload } = useAsync<RoomRow[]>(() => visualizerApi.rooms(), []);
   const { data: materials, reload: reloadMaterials } = useAsync<VisualizerMaterialRow[]>(() => visualizerApi.materials(), []);
 
+  const [tab, setTab] = useState<'rooms' | 'settings'>('rooms');
   const [editing, setEditing] = useState<RoomRow | 'new' | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [configMaterial, setConfigMaterial] = useState<string>('');
+
+  const tabClass = (active: boolean) =>
+    cx(
+      'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+      active ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-500 hover:text-stone-800',
+    );
 
   if (loading) return <Loading label="Loading rooms…" />;
   if (error) {
@@ -26,11 +34,23 @@ export function VisualizerPage() {
 
   return (
     <div>
-      <PageHeader title="Visualizer" subtitle="Room templates for the try-in-your-room tool">
-        <Button onClick={() => setEditing('new')}><Plus className="h-4 w-4" /> New room</Button>
+      <PageHeader
+        title="Visualizer"
+        subtitle={tab === 'rooms' ? 'Room templates for the try-in-your-room tool' : 'Global AI and behavior settings'}
+      >
+        {tab === 'rooms' && <Button onClick={() => setEditing('new')}><Plus className="h-4 w-4" /> New room</Button>}
       </PageHeader>
 
-      <Card className="overflow-hidden">
+      <div className="mb-6 flex gap-1 border-b border-stone-200">
+        <button onClick={() => setTab('rooms')} className={tabClass(tab === 'rooms')}>Rooms</button>
+        <button onClick={() => setTab('settings')} className={tabClass(tab === 'settings')}>Settings</button>
+      </div>
+
+      {tab === 'settings' ? (
+        <VisualizerSettingsPanel />
+      ) : (
+        <>
+          <Card className="overflow-hidden">
         {!rooms || rooms.length === 0 ? (
           <EmptyState title="No rooms yet" message="Create your first room template." />
         ) : (
@@ -128,6 +148,8 @@ export function VisualizerPage() {
         }}
         onCancel={() => setDeletingId(null)}
       />
+        </>
+      )}
     </div>
   );
 }

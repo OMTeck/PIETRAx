@@ -1,5 +1,5 @@
-import { config } from '../config.js';
 import { AppError } from '../http/errors.js';
+import { getVisualizerSettings } from './visualizerSettings.js';
 
 export interface RoboflowPoint {
   x: number;
@@ -33,38 +33,38 @@ interface RoboflowApiResponse {
   }>;
 }
 
-/** Surface classes Roboflow is trained on; anything else is kept verbatim. */
-const KNOWN_SURFACE_TYPES = new Set([
-  'FLOOR',
-  'WALL',
-  'CEILING',
-  'COUNTERTOP',
-  'BACKSPLASH',
-  'ISLAND',
-  'FEATURE_WALL',
-]);
-
-function normalizeSurfaceType(label: string): string {
-  const upper = label.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-  return KNOWN_SURFACE_TYPES.has(upper) ? upper : upper;
+/**
+ * Maps a detected class label to a canonical surface type. The admin may
+ * supply an explicit class→surface map (e.g. { "sofa": "FLOOR" }); anything
+ * unmapped falls back to an upper-cased, sanitized version of the label.
+ */
+function normalizeSurfaceType(label: string, classMap: Record<string, string>): string {
+  const key = label.trim();
+  const mapped = classMap[key] ?? classMap[key.toLowerCase()] ?? classMap[key.toUpperCase()];
+  const source = mapped ?? key;
+  return source.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
 }
 
 /**
  * Adapter for the Roboflow hosted inference API (legacy infer endpoint).
  * The client never sees the API key: it only posts a compressed image and
- * receives normalized polygons back.
+ * receives normalized polygons back. Model, key, confidence, timeout and the
+ * class→surface map all come from the runtime settings edited in the admin.
  */
 export async function segmentRoomImage(imageBuffer: Buffer, imageMime: string): Promise<RoboflowResult> {
-  if (!config.roboflow.enabled || !config.roboflow.apiKey || !config.roboflow.model) {
+  const settings = await getVisualizerSettings();
+  const { enabled, apiKey, model, baseUrl, confidence, timeoutMs, classMap } = settings.analysis;
+
+  if (!enabled || !apiKey || !model) {
     throw new AppError(503, 'Image AI analysis is not enabled.', 'AI_DISABLED');
   }
 
-  const url = new URL(`/${config.roboflow.model}`, config.roboflow.baseUrl);
-  url.searchParams.set('api_key', config.roboflow.apiKey);
-  url.searchParams.set('confidence', String(config.roboflow.confidence));
+  const url = new URL(`/${model}`, baseUrl);
+  url.searchParams.set('api_key', apiKey);
+  url.searchParams.set('confidence', String(confidence));
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.roboflow.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     // The hosted inference endpoint expects a base64-encoded image body
@@ -90,7 +90,7 @@ export async function segmentRoomImage(imageBuffer: Buffer, imageMime: string): 
     const segments = (data.predictions ?? [])
       .filter((p) => Array.isArray(p.points) && p.points.length >= 3)
       .map((p) => {
-        const surfaceType = normalizeSurfaceType(p.class ?? 'UNKNOWN');
+        const surfaceType = normalizeSurfaceType(p.class ?? 'UNKNOWN', classMap);
         return {
           surfaceType,
           label: (p.class ?? 'UNKNOWN').trim(),

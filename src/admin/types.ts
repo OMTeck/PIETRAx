@@ -313,6 +313,60 @@ export interface VisualizerMaterialRow {
   config: Record<string, unknown> | null;
 }
 
+export interface VisualizerSurfacePoint {
+  x: number;
+  y: number;
+}
+
+export interface VisualizerSurfaceSetting {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  tileCm: number;
+  noun: string;
+  polygon: VisualizerSurfacePoint[];
+}
+
+export interface VisualizerSettings {
+  enabled: boolean;
+  features: {
+    allowUpload: boolean;
+    allowPresetRooms: boolean;
+    allowExport: boolean;
+    allowCompare: boolean;
+    allowManualAreaEdit: boolean;
+  };
+  analysis: {
+    enabled: boolean;
+    apiKey: string;
+    model: string;
+    baseUrl: string;
+    confidence: number;
+    timeoutMs: number;
+    autoApply: boolean;
+    classMap: Record<string, string>;
+  };
+  edit: {
+    enabled: boolean;
+    workerUrl: string;
+    workerSecret: string;
+    guidance: number;
+    targetLongEdge: number;
+    minEdge: number;
+    sizeMultiple: number;
+    maxInputDim: number;
+    quality: number;
+    timeoutMs: number;
+    promptTemplate: string;
+  };
+  behavior: {
+    displayAspect: number;
+    simplifyTolerance: number;
+    simplifyMinPoints: number;
+    surfaces: VisualizerSurfaceSetting[];
+  };
+}
+
 // ---- Customers -----------------------------------------------------------
 
 export interface QuoteRequestRow {

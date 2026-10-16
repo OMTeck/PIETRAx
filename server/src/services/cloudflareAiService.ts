@@ -1,5 +1,5 @@
-import { config } from '../config.js';
 import { AppError } from '../http/errors.js';
+import { getVisualizerSettings } from './visualizerSettings.js';
 
 export interface CloudflareAiResult {
   imageBase64: string;
@@ -50,45 +50,50 @@ function imageDimensions(buffer: Buffer): { w: number; h: number } | null {
   return null;
 }
 
-const TARGET_LONG_EDGE = 1024;
-const MIN_EDGE = 256;
-const SIZE_MULTIPLE = 16;
+interface SizeOptions {
+  longEdge: number;
+  minEdge: number;
+  multiple: number;
+}
 
 /**
- * Output size that keeps the input's aspect ratio while staying inside the
- * sizes FLUX.2 klein accepts (multiples of 16, comfortably below the verified
+ * Output size that keeps the input's aspect ratio while snapping to the sizes
+ * FLUX.2 klein accepts (multiples of `multiple`, comfortably below the verified
  * 1152x832 ceiling) so the result isn't cropped to a different shape.
  */
-function targetSize(w: number, h: number): { width: number; height: number } {
-  if (!w || !h) return { width: TARGET_LONG_EDGE, height: TARGET_LONG_EDGE };
+function targetSize(w: number, h: number, opts: SizeOptions): { width: number; height: number } {
+  const { longEdge, minEdge, multiple } = opts;
+  if (!w || !h) return { width: longEdge, height: longEdge };
   const ratio = w / h;
-  let tw = ratio >= 1 ? TARGET_LONG_EDGE : TARGET_LONG_EDGE * ratio;
-  let th = ratio >= 1 ? TARGET_LONG_EDGE / ratio : TARGET_LONG_EDGE;
-  const minEdge = Math.min(tw, th);
-  if (minEdge < MIN_EDGE) {
-    const k = MIN_EDGE / minEdge;
+  let tw = ratio >= 1 ? longEdge : longEdge * ratio;
+  let th = ratio >= 1 ? longEdge / ratio : longEdge;
+  const shortest = Math.min(tw, th);
+  if (shortest < minEdge) {
+    const k = minEdge / shortest;
     tw *= k;
     th *= k;
   }
-  tw = Math.max(SIZE_MULTIPLE, Math.round(tw / SIZE_MULTIPLE) * SIZE_MULTIPLE);
-  th = Math.max(SIZE_MULTIPLE, Math.round(th / SIZE_MULTIPLE) * SIZE_MULTIPLE);
+  tw = Math.max(multiple, Math.round(tw / multiple) * multiple);
+  th = Math.max(multiple, Math.round(th / multiple) * multiple);
   return { width: tw, height: th };
 }
 
 /**
  * Calls the pietrax-ai Cloudflare Worker, which runs FLUX.2 klein 4B via a
  * Workers AI binding. The Worker is protected by a shared secret that only the
- * backend holds (CLOUDFLARE_AI_WORKER_SECRET) — it is never exposed to the
- * browser. Input images must be <=512x512 (the client downscales before
- * posting), matching the model's documented limit.
+ * backend holds — it is never exposed to the browser. Endpoint, secret,
+ * guidance, target-size rules and timeout come from the runtime settings edited
+ * in the admin.
  */
 export async function editImageWithFlux(
   prompt: string,
   imageBuffer: Buffer,
   mime: string,
 ): Promise<CloudflareAiResult> {
-  const { workerUrl, workerSecret, guidance } = config.cloudflareAi;
-  if (!workerUrl || !workerSecret) {
+  const settings = await getVisualizerSettings();
+  const { enabled, workerUrl, workerSecret, guidance, timeoutMs } = settings.edit;
+
+  if (!enabled || !workerUrl || !workerSecret) {
     throw new AppError(503, 'AI image editing is not enabled.', 'AI_DISABLED');
   }
 
@@ -98,13 +103,17 @@ export async function editImageWithFlux(
   form.append('input_image_0', new Blob([imageBuffer], { type: mime || 'image/png' }), 'input.png');
   const dims = imageDimensions(imageBuffer);
   if (dims) {
-    const { width, height } = targetSize(dims.w, dims.h);
+    const { width, height } = targetSize(dims.w, dims.h, {
+      longEdge: settings.edit.targetLongEdge,
+      minEdge: settings.edit.minEdge,
+      multiple: settings.edit.sizeMultiple,
+    });
     form.append('width', String(width));
     form.append('height', String(height));
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(workerUrl, {
       method: 'POST',

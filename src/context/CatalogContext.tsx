@@ -5,6 +5,7 @@ import {
   type PubCollection,
   type PubProject,
   type PubVisualizer,
+  type PubVisualizerConfig,
   type SiteSettings,
 } from '@/lib/public';
 
@@ -15,6 +16,7 @@ interface CatalogValue {
   collections: PubCollection[];
   projects: PubProject[];
   visualizer: PubVisualizer | null;
+  visualizerConfig: PubVisualizerConfig | null;
   settings: SiteSettings | null;
   refresh: () => void;
   materialBySlug: (slug: string) => PubMaterial | undefined;
@@ -30,22 +32,25 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   const [collections, setCollections] = useState<PubCollection[]>([]);
   const [projects, setProjects] = useState<PubProject[]>([]);
   const [visualizer, setVisualizer] = useState<PubVisualizer | null>(null);
+  const [visualizerConfig, setVisualizerConfig] = useState<PubVisualizerConfig | null>(null);
   const [settings, setSettings] = useState<SiteSettings | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const [materialsRes, collectionsRes, projectsRes, visualizerRes, siteRes] = await Promise.allSettled([
+    const [materialsRes, collectionsRes, projectsRes, visualizerRes, visualizerConfigRes, siteRes] = await Promise.allSettled([
       publicApi.materials(),
       publicApi.collections(),
       publicApi.projects(),
       publicApi.visualizer(),
+      publicApi.visualizerConfig(),
       publicApi.site(),
     ]);
     if (materialsRes.status === 'fulfilled') setMaterials(materialsRes.value);
     if (collectionsRes.status === 'fulfilled') setCollections(collectionsRes.value);
     if (projectsRes.status === 'fulfilled') setProjects(projectsRes.value);
     if (visualizerRes.status === 'fulfilled') setVisualizer(visualizerRes.value);
+    if (visualizerConfigRes.status === 'fulfilled') setVisualizerConfig(visualizerConfigRes.value);
     if (siteRes.status === 'fulfilled') setSettings(siteRes.value);
     const failed = [materialsRes, collectionsRes, projectsRes, visualizerRes, siteRes].filter(
       (r): r is PromiseRejectedResult => r.status === 'rejected',
@@ -74,7 +79,7 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
 
   return (
     <CatalogContext.Provider
-      value={{ loading, error, materials, collections, projects, visualizer, settings, refresh, materialBySlug, projectBySlug }}
+      value={{ loading, error, materials, collections, projects, visualizer, visualizerConfig, settings, refresh, materialBySlug, projectBySlug }}
     >
       {children}
     </CatalogContext.Provider>

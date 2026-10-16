@@ -3,7 +3,7 @@ import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { useCatalog } from '@/context/CatalogContext';
-import { pubMaterialName, publicApi } from '@/lib/public';
+import { pubMaterialName, publicApi, type PubVisualizerSurface } from '@/lib/public';
 import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
   ArrowLeft, ArrowRight, Upload, X, ZoomIn, RotateCcw, Maximize2,
@@ -19,28 +19,51 @@ import type { RoomLayout, SurfaceKind, Step, VisMaterial, NormalizedPoint } from
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 
-const SURFACE_NOUN_EN: Record<string, string> = {
-  floor: 'floor',
-  wall: 'wall',
-  ceiling: 'ceiling',
-  countertop: 'countertop and cabinetry',
-};
+const FALLBACK_PROMPT =
+  'Use image 0 as the base photo. Replace the {noun} with {material}, keeping the exact same room, walls, ceiling, furniture, camera angle, perspective and lighting. Photorealistic interior, high detail.';
 
-/** Builds the FLUX instruction from the chosen material + surface noun. */
-function buildMaterialPrompt(materialEnName: string, noun: string): string {
-  return `Use image 0 as the base photo. Replace the ${noun} with ${materialEnName}, keeping the exact same room, walls, ceiling, furniture, camera angle, perspective and lighting. Photorealistic interior, high detail.`;
+/** Mirrors the server defaults so the page still works before /config loads. */
+const FALLBACK_SURFACES: PubVisualizerSurface[] = [
+  { id: 'floor', nameAr: 'الأرضية', nameEn: 'Floor', tileCm: 40, noun: 'floor', polygon: [{ x: 0, y: 0.55 }, { x: 1, y: 0.55 }, { x: 1, y: 1 }, { x: 0, y: 1 }] },
+  { id: 'wall', nameAr: 'الجدار', nameEn: 'Wall', tileCm: 40, noun: 'wall', polygon: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 0.55 }, { x: 0, y: 0.55 }] },
+  { id: 'countertop', nameAr: 'سطح العمل', nameEn: 'Countertop', tileCm: 60, noun: 'countertop and cabinetry', polygon: [{ x: 0, y: 0.4 }, { x: 1, y: 0.4 }, { x: 1, y: 0.6 }, { x: 0, y: 0.6 }] },
+];
+
+/** Builds the FLUX instruction from the configured template + material/noun. */
+function buildMaterialPrompt(template: string, materialEnName: string, noun: string): string {
+  return template.replace(/\{material\}/g, materialEnName).replace(/\{noun\}/g, noun);
 }
 
 export function VisualizerPage() {
   const { t, lang } = useLang();
   const { navigate, path } = useRoute();
   const { toggle, has } = useWishlist();
-  const { visualizer, materialBySlug, loading } = useCatalog();
+  const { visualizer, visualizerConfig, materialBySlug, loading } = useCatalog();
 
   const params = new URLSearchParams(path.split('?')[1] || '');
   const presetMaterialSlug = params.get('material');
 
   const rooms = visualizer?.rooms ?? [];
+
+  const features = visualizerConfig?.features;
+  const allowUpload = features?.allowUpload !== false;
+  const allowPresetRooms = features?.allowPresetRooms !== false;
+  const allowExport = features?.allowExport !== false;
+  const allowCompare = features?.allowCompare !== false;
+  const allowManualAreaEdit = features?.allowManualAreaEdit !== false;
+  const behavior = visualizerConfig?.behavior;
+  const surfacesConfig = behavior?.surfaces?.length ? behavior.surfaces : FALLBACK_SURFACES;
+  const surfaceConfigById = useMemo(() => {
+    const map: Record<string, PubVisualizerSurface> = {};
+    for (const s of surfacesConfig) map[s.id] = s;
+    return map;
+  }, [surfacesConfig]);
+  const promptTemplate = visualizerConfig?.edit?.promptTemplate || FALLBACK_PROMPT;
+  const presetAspect = behavior?.displayAspect ?? 16 / 10;
+  const aiAnalysisEnabled = visualizerConfig?.analysis?.enabled !== false;
+  const aiEditEnabled = visualizerConfig?.edit?.enabled !== false;
+  const editMaxInputDim = visualizerConfig?.edit?.maxInputDim ?? 500;
+  const editQuality = visualizerConfig?.edit?.quality ?? 0.85;
 
   const visMaterials: VisMaterial[] = useMemo(() => {
     return (visualizer?.materials ?? []).map((vm) => {
@@ -98,7 +121,7 @@ export function VisualizerPage() {
   const surfKind = (id: string): SurfaceKind =>
     id === 'wall' ? 'wall' : id === 'ceiling' ? 'ceiling' : id === 'countertop' ? 'countertop' : 'floor';
   const surfTileCm = (id: string): number =>
-    id === 'countertop' ? 60 : id === 'ceiling' ? 30 : 40;
+    surfaceConfigById[id]?.tileCm ?? (id === 'countertop' ? 60 : id === 'ceiling' ? 30 : 40);
 
   /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
   useEffect(() => {
@@ -150,6 +173,16 @@ export function VisualizerPage() {
     );
   }
 
+  if (visualizerConfig && !visualizerConfig.enabled) {
+    return (
+      <div className="pt-32 pb-20 min-h-screen bg-stone-100 text-center">
+        <p className="text-stone-500">
+          {lang === 'ar' ? 'أداة المحاكاة غير متاحة حاليًا.' : 'The room visualizer is currently unavailable.'}
+        </p>
+      </div>
+    );
+  }
+
   const selectedRoom = rooms.find((r) => r.id === selectedRoomId);
   const selectedSurface = selectedRoom?.surfaces.find((s) => s.id === selectedSurfaceId);
   const selectedMaterial = visMaterials.find((m) => m.id === selectedMaterialId);
@@ -166,13 +199,14 @@ export function VisualizerPage() {
   const aiResultActive = !!aiEditedImage;
   const resultSrc = roomImage;
 
-  // Preset rooms render at a fixed 16:10 box (their clip-paths were authored for
-  // it); uploads keep the photo's own aspect. AI edits match that display box.
-  const displayAspect = uploadMode && imageAspect ? imageAspect : 16 / 10;
+  // Preset rooms render at the configured box (their clip-paths were authored
+  // for it); uploads keep the photo's own aspect. AI edits match that display box.
+  const displayAspect = uploadMode && imageAspect ? imageAspect : presetAspect;
 
-  /** FLUX noun for a surface: upload surfaces by id, presets by their name. */
+  /** FLUX noun for a surface: configured surfaces by id, presets by their name. */
   const nounForSurface = (surfaceId: string): string => {
-    if (SURFACE_NOUN_EN[surfaceId]) return SURFACE_NOUN_EN[surfaceId];
+    const configured = surfaceConfigById[surfaceId];
+    if (configured?.noun) return configured.noun;
     const name = (selectedRoom?.surfaces.find((s) => s.id === surfaceId)?.nameEn || '').toLowerCase();
     if (name.includes('floor')) return 'floor';
     if (name.includes('ceiling')) return 'ceiling';
@@ -184,7 +218,11 @@ export function VisualizerPage() {
   /** Maps a detected surfaceType to the active surface id (upload id or preset id). */
   const surfaceIdForType = (type: string): string | null => {
     const k = type.toLowerCase();
-    if (uploadMode) return SURFACE_NOUN_EN[k] ? k : null;
+    if (uploadMode) {
+      if (surfaceConfigById[k]) return k;
+      const byNoun = surfacesConfig.find((s) => s.noun.toLowerCase().includes(k));
+      return byNoun?.id ?? null;
+    }
     const match = selectedRoom?.surfaces.find((s) => {
       const n = (s.nameEn || '').toLowerCase();
       if (k === 'floor') return n.includes('floor');
@@ -213,17 +251,9 @@ export function VisualizerPage() {
     }
   };
 
-  const defaultUploadPolygon: Record<string, NormalizedPoint[]> = {
-    floor: [
-      { x: 0, y: 0.55 }, { x: 1, y: 0.55 }, { x: 1, y: 1 }, { x: 0, y: 1 },
-    ],
-    wall: [
-      { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 0.55 }, { x: 0, y: 0.55 },
-    ],
-    countertop: [
-      { x: 0, y: 0.4 }, { x: 1, y: 0.4 }, { x: 1, y: 0.6 }, { x: 0, y: 0.6 },
-    ],
-  };
+  const defaultUploadPolygon: Record<string, NormalizedPoint[]> = Object.fromEntries(
+    surfacesConfig.map((s) => [s.id, s.polygon]),
+  );
 
   const polygonFor = (surfaceId: string): NormalizedPoint[] =>
     aiSegments[surfaceId] ?? defaultUploadPolygon[surfaceId] ?? [
@@ -240,7 +270,7 @@ export function VisualizerPage() {
           x: p.x / result.width,
           y: p.y / result.height,
         }));
-        mapped[surfaceId] = simplifyPolygon(pts, 0.02, 30);
+        mapped[surfaceId] = simplifyPolygon(pts, behavior?.simplifyTolerance ?? 0.02, behavior?.simplifyMinPoints ?? 30);
       }
     }
     setAiSegments((prev) => ({ ...prev, ...mapped }));
@@ -259,18 +289,18 @@ export function VisualizerPage() {
    */
   const runAutoAiEdit = async (material: VisMaterial, surfaceId: string) => {
     const base = uploadedImage ?? selectedRoom?.previewImage ?? null;
-    if (!base) return;
+    if (!base || !aiEditEnabled) return;
     setAiBusy(true);
     setAiError(false);
     setAiEditedImage(null);
     try {
       const compressed = await compressImage(base, {
-        maxDim: 500,
-        quality: 0.85,
+        maxDim: editMaxInputDim,
+        quality: editQuality,
         cropAspect: uploadMode ? undefined : displayAspect,
       });
       const res = await publicApi.aiEditRoom({
-        prompt: buildMaterialPrompt(material.enName || material.name, nounForSurface(surfaceId)),
+        prompt: buildMaterialPrompt(promptTemplate, material.enName || material.name, nounForSurface(surfaceId)),
         image: compressed.dataUrl,
         mime: 'image/jpeg',
       });
@@ -294,24 +324,15 @@ export function VisualizerPage() {
   const applySurfaceClip = (surfaceId: string): string => {
     const seg = aiSegments[surfaceId];
     if (seg && seg.length >= 3) return pointsToClipPath(seg);
-    if (uploadMode && imageAspect) {
+    if (uploadMode) {
       const pts = polygonFor(surfaceId);
       if (pts.length >= 3) return pointsToClipPath(pts);
-    }
-    if (uploadMode) {
-      if (surfaceId === 'floor') return 'polygon(0 55%, 100% 55%, 100% 100%, 0 100%)';
-      if (surfaceId === 'wall') return 'polygon(0 0, 100% 0, 100% 55%, 0 55%)';
-      if (surfaceId === 'countertop') return 'polygon(0 40%, 100% 40%, 100% 60%, 0 60%)';
     }
     const surface = selectedRoom?.surfaces.find((s) => s.id === surfaceId);
     return surface?.clipPath || 'polygon(0 0, 100% 0, 100% 100%, 0 100%)';
   };
 
-  const uploadSurfaces = [
-    { id: 'floor', name: 'Floor', nameAr: '' },
-    { id: 'wall', name: 'Wall', nameAr: '' },
-    { id: 'countertop', name: 'Countertop', nameAr: '' },
-  ];
+  const uploadSurfaces = surfacesConfig.map((s) => ({ id: s.id, name: s.nameEn, nameAr: s.nameAr }));
 
   const surfaces = uploadMode
     ? uploadSurfaces.map((s) => ({ id: s.id, clipPath: '', nameAr: s.nameAr, nameEn: s.name }))
@@ -380,6 +401,7 @@ export function VisualizerPage() {
       {step === 'room' && (
         <div className="container-lux pb-20">
           {/* Upload Option */}
+          {allowUpload && (
           <Reveal>
             <button
               onClick={() => fileRef.current?.click()}
@@ -391,7 +413,9 @@ export function VisualizerPage() {
             </button>
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
           </Reveal>
+          )}
 
+          {allowPresetRooms && (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
             {rooms.map((room, i) => (
               <Reveal key={room.id} delay={i * 60}>
@@ -423,6 +447,7 @@ export function VisualizerPage() {
               </Reveal>
             ))}
           </div>
+          )}
         </div>
       )}
 
@@ -442,12 +467,14 @@ export function VisualizerPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 mb-3">
-            <AIAnalyzeButton
-              uploadedImage={roomImage}
-              cropAspect={uploadMode ? undefined : displayAspect}
-              onSegments={handleAISegments}
-            />
-            {uploadMode && editingSurfaceId && (
+            {aiAnalysisEnabled && (
+              <AIAnalyzeButton
+                uploadedImage={roomImage}
+                cropAspect={uploadMode ? undefined : displayAspect}
+                onSegments={handleAISegments}
+              />
+            )}
+            {uploadMode && allowManualAreaEdit && editingSurfaceId && (
               <button
                 onClick={() => setEditingSurfaceId(null)}
                 className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 text-stone-900 hover:bg-stone-900 hover:text-ivory transition-colors"
@@ -503,7 +530,7 @@ export function VisualizerPage() {
                 {lang === 'ar' ? (surface.nameAr || t(surface.id === 'floor' ? 'floor' : surface.id === 'wall' ? 'wall' : 'countertop')) : surface.nameEn}
               </button>
             ))}
-            {uploadMode && !editingSurfaceId && (
+            {uploadMode && !editingSurfaceId && allowManualAreaEdit && (
               <button
                 onClick={() => setEditingSurfaceId(surfaces[0]?.id ?? 'floor')}
                 className="filter-chip"
@@ -600,7 +627,7 @@ export function VisualizerPage() {
                 <button onClick={() => setShowOriginal((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                   {showOriginal ? t('aiEditResult') : t('originalImage')}
                 </button>
-              ) : (
+              ) : allowCompare && (
                 <button onClick={() => setShowCompare(!showCompare)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                   {t('compare')}
                 </button>
@@ -713,7 +740,7 @@ export function VisualizerPage() {
           )}
 
           {/* Compare Material Selector */}
-          {showCompare && (
+          {allowCompare && showCompare && (
             <div className="mt-4">
               <p className="text-xs tracking-[0.15em] uppercase text-stone-500 mb-3">{t('compare')} A / B</p>
               <div className="flex gap-3 overflow-x-auto scrollbar-hide">
@@ -767,6 +794,8 @@ export function VisualizerPage() {
                 <Heart size={14} strokeWidth={1.5} fill={has(selectedMaterial.id) ? 'currentColor' : 'none'} className={has(selectedMaterial.id) ? 'text-accent' : ''} />
                 {t('saveDesign')}
               </button>
+              {allowExport && (
+              <>
               <button onClick={() => handleExport('download')} disabled={exporting} className="flex items-center gap-2 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900 transition-colors disabled:opacity-50">
                 <Download size={14} strokeWidth={1.5} />
                 {t('downloadImage')}
@@ -775,6 +804,8 @@ export function VisualizerPage() {
                 <Share2 size={14} strokeWidth={1.5} />
                 {t('share')}
               </button>
+              </>
+              )}
             </div>
           </div>
 

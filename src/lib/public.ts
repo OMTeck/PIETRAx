@@ -146,8 +146,32 @@ export interface PubAISegment {
   points: PubAIPoint[];
 }
 
-export interface PubAIConfig {
-  ai: { enabled: boolean };
+export interface PubVisualizerSurface {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  tileCm: number;
+  noun: string;
+  polygon: PubAIPoint[];
+}
+
+export interface PubVisualizerConfig {
+  enabled: boolean;
+  features: {
+    allowUpload: boolean;
+    allowPresetRooms: boolean;
+    allowExport: boolean;
+    allowCompare: boolean;
+    allowManualAreaEdit: boolean;
+  };
+  analysis: { enabled: boolean; autoApply: boolean };
+  edit: { enabled: boolean; maxInputDim: number; quality: number; promptTemplate: string };
+  behavior: {
+    displayAspect: number;
+    simplifyTolerance: number;
+    simplifyMinPoints: number;
+    surfaces: PubVisualizerSurface[];
+  };
 }
 
 export interface SiteSettings {
@@ -274,7 +298,7 @@ export const publicApi = {
   projects: () => get<{ projects: PubProject[] }>('/api/projects').then((r) => r.projects),
   project: (slug: string) => get<{ project: PubProject }>(`/api/projects/${slug}`).then((r) => r.project),
   visualizer: () => get<PubVisualizer>('/api/visualizer'),
-  visualizerConfig: () => get<PubAIConfig>('/api/visualizer/config'),
+  visualizerConfig: () => get<PubVisualizerConfig>('/api/visualizer/config'),
   segmentRoom: (body: { image: string; mime?: string }) =>
     post<{ status: string; width: number; height: number; segments: PubAISegment[] }>(
       '/api/visualizer/segment',

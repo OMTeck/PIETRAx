@@ -23,6 +23,7 @@ import type {
   AdminSettings,
   AdminUser,
   VisualizerMaterialRow,
+  VisualizerSettings,
 } from '@/admin/types';
 
 type Params = {
@@ -152,6 +153,9 @@ export const visualizerApi = {
   saveConfig: (materialId: string, body: Record<string, unknown>) =>
     patch<{ config: Record<string, unknown> }>(`/api/admin/visualizer/materials/${materialId}`, body).then((r) => r.config),
   removeConfig: (materialId: string) => del<{ ok: boolean }>(`/api/admin/visualizer/materials/${materialId}`),
+  getSettings: () => get<{ settings: VisualizerSettings }>('/api/admin/visualizer/settings').then((r) => r.settings),
+  saveSettings: (body: VisualizerSettings) =>
+    put<{ settings: VisualizerSettings }>('/api/admin/visualizer/settings', body).then((r) => r.settings),
 };
 
 // ---- Customers -------------------------------------------------------------
