@@ -12,6 +12,7 @@ import {
   updateVisualizerSettings,
   resolveVisionProvider,
   visionProviderSchema,
+  DEFAULT_VISION_PROMPT,
 } from '../../services/visualizerSettings.js';
 import { testVisionProvider, VISION_PROVIDER_META } from '../../services/visionProviderService.js';
 import type { Prisma, RoomType, SurfaceType } from '@prisma/client';
@@ -127,7 +128,7 @@ visualizerRouter.put(
 visualizerRouter.get(
   '/vision/meta',
   asyncHandler(async (_req, res) => {
-    res.json({ types: Object.values(VISION_PROVIDER_META) });
+    res.json({ types: Object.values(VISION_PROVIDER_META), defaultPrompt: DEFAULT_VISION_PROMPT });
   }),
 );
 

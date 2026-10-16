@@ -19,6 +19,19 @@ export const SECRET_MASK = '••••••••';
 export const DEFAULT_PROMPT_TEMPLATE =
   'Repaint ONLY the {noun} with {material}, keeping the material exact color, tone, pattern, veining, gloss and finish. This is a strict photorealistic MATERIAL REPLACEMENT, not a redesign. STRICT RULES: (1) Do NOT change the shape or geometry of anything: keep the same room, perspective, camera angle, framing and proportions. (2) Do NOT change the color of anything except the {noun}: keep the overall color balance, walls, ceiling, floor, furniture, objects, decor, shadows and lighting exactly as in the original. (3) Do NOT add, remove, move, resize, reshape or restyle any object or surface. (4) Everything outside the {noun} must stay pixel-for-pixel identical. Output one photorealistic image: same scene, same composition, same room colors, material true to reference.';
 
+/** The instruction sent to the selected vision LLM when it analyzes a photo
+ *  for surfaces. Editable from the admin so it applies to whichever provider
+ *  is selected. Must return JSON in the documented shape. */
+export const DEFAULT_VISION_PROMPT = [
+  'You are analyzing an interior room photo for a surface-placement tool.',
+  'Identify the major planar surfaces and respond with ONLY JSON, no prose:',
+  '{"surfaces":[{"type":"FLOOR|WALL|CEILING|COUNTERTOP","confidence":0.0,"points":[{"x":0.0,"y":0.0}]}]}',
+  'Rules:',
+  '- "points" are normalized coordinates in 0..1 relative to the image (x from left, y from top) forming a closed polygon for that surface region.',
+  '- Return at most 4 surfaces. Use only the listed types.',
+  '- Omit any surface you cannot locate with confidence.',
+].join('\n');
+
 const normalizedPointSchema = z.object({
   x: z.number().min(-0.05).max(1.05),
   y: z.number().min(-0.05).max(1.05),
@@ -104,6 +117,7 @@ export const visualizerSettingsSchema = z.object({
       enabled: z.boolean().default(false),
       fallbackToRoboflow: z.boolean().default(true),
       defaultProviderId: z.string().max(60).default(''),
+      promptTemplate: z.string().min(1).max(2000).default(DEFAULT_VISION_PROMPT),
       providers: z.array(visionProviderSchema).max(12).default([]),
     })
     .default({}),
@@ -207,6 +221,7 @@ function buildDefaults(): VisualizerSettings {
       enabled: false,
       fallbackToRoboflow: true,
       defaultProviderId: '',
+      promptTemplate: DEFAULT_VISION_PROMPT,
       providers: [],
     },
   };

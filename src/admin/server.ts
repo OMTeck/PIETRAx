@@ -25,7 +25,7 @@ import type {
   VisualizerMaterialRow,
   VisualizerSettings,
   VisionProvider,
-  VisionProviderMeta,
+  VisionMetaResponse,
   VisionTestResult,
 } from '@/admin/types';
 
@@ -159,7 +159,7 @@ export const visualizerApi = {
   getSettings: () => get<{ settings: VisualizerSettings }>('/api/admin/visualizer/settings').then((r) => r.settings),
   saveSettings: (body: VisualizerSettings) =>
     put<{ settings: VisualizerSettings }>('/api/admin/visualizer/settings', body).then((r) => r.settings),
-  visionMeta: () => get<{ types: VisionProviderMeta[] }>('/api/admin/visualizer/vision/meta').then((r) => r.types),
+  visionMeta: () => get<VisionMetaResponse>('/api/admin/visualizer/vision/meta'),
   testVisionProvider: (provider: VisionProvider) =>
     post<VisionTestResult>('/api/admin/visualizer/vision/test', provider),
 };

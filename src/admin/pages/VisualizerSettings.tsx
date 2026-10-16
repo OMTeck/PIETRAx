@@ -3,7 +3,7 @@ import { Save, Sparkles, Wand2, SlidersHorizontal, ShieldCheck, Plus, Trash2, Cp
 import { visualizerApi } from '@/admin/server';
 import { useAsync } from '@/admin/lib';
 import { Button, Input, Field, Toggle, Textarea, Select, Card, Loading, useToast, cx } from '@/admin/ui';
-import type { VisualizerSettings, VisualizerSurfaceSetting, VisualizerSurfacePoint, VisionProvider, VisionProviderMeta, VisionProviderType } from '@/admin/types';
+import type { VisualizerSettings, VisualizerSurfaceSetting, VisualizerSurfacePoint, VisionProvider, VisionMetaResponse, VisionProviderType } from '@/admin/types';
 
 function num(v: string, fallback = 0): number {
   const n = Number.parseFloat(v);
@@ -43,7 +43,9 @@ function JsonArea({ value, onChange, rows = 4, placeholder }: { value: unknown; 
 export function VisualizerSettingsPanel() {
   const { toast } = useToast();
   const { data, loading, error } = useAsync<VisualizerSettings>(() => visualizerApi.getSettings(), []);
-  const { data: meta } = useAsync<VisionProviderMeta[]>(() => visualizerApi.visionMeta(), []);
+  const { data: meta } = useAsync<VisionMetaResponse>(() => visualizerApi.visionMeta(), []);
+  const metaTypes = meta?.types ?? [];
+  const defaultVisionPrompt = meta?.defaultPrompt ?? '';
   const [s, setS] = useState<VisualizerSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function VisualizerSettingsPanel() {
   const setBehavior = (patch: Partial<VisualizerSettings['behavior']>) => setS({ ...s, behavior: { ...s.behavior, ...patch } });
   const setSurfaces = (surfaces: VisualizerSurfaceSetting[]) => setBehavior({ surfaces });
   const setVision = (patch: Partial<VisualizerSettings['vision']>) => setS({ ...s, vision: { ...s.vision, ...patch } });
-  const pm = (t: VisionProviderType) => (meta ?? []).find((m) => m.type === t);
+  const pm = (t: VisionProviderType) => metaTypes.find((m) => m.type === t);
   const setProviders = (providers: VisionProvider[]) => setVision({ providers });
   const updateProvider = (idx: number, patch: Partial<VisionProvider>) =>
     setProviders(s.vision.providers.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
@@ -176,6 +178,24 @@ export function VisualizerSettingsPanel() {
         </div>
 
         <div className="mt-5">
+          <Field
+            label="Vision analysis prompt"
+            hint="Sent to whichever provider is selected. Must return ONLY JSON in the documented shape."
+          >
+            <Textarea rows={6} value={s.vision.promptTemplate} onChange={(e) => setVision({ promptTemplate: e.target.value })} />
+          </Field>
+          {s.vision.promptTemplate !== defaultVisionPrompt && (
+            <button
+              type="button"
+              className="mt-1 text-xs text-stone-500 underline hover:text-stone-700"
+              onClick={() => setVision({ promptTemplate: defaultVisionPrompt })}
+            >
+              Reset to default
+            </button>
+          )}
+        </div>
+
+        <div className="mt-5">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-stone-800">Providers</h3>
             <Button
@@ -224,7 +244,7 @@ export function VisualizerSettingsPanel() {
                         updateProvider(idx, { providerType: type, baseUrl: provider.baseUrl || hint });
                       }}
                     >
-                      {(meta ?? []).map((m) => (
+                      {metaTypes.map((m) => (
                         <option key={m.type} value={m.type}>{m.label}</option>
                       ))}
                     </Select>

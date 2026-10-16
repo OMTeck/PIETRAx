@@ -351,6 +351,11 @@ export interface VisionProviderMeta {
   keyHint: string;
 }
 
+export interface VisionMetaResponse {
+  types: VisionProviderMeta[];
+  defaultPrompt: string;
+}
+
 export interface VisionTestResult {
   ok: boolean;
   message: string;
@@ -399,6 +404,7 @@ export interface VisualizerSettings {
     enabled: boolean;
     fallbackToRoboflow: boolean;
     defaultProviderId: string;
+    promptTemplate: string;
     providers: VisionProvider[];
   };
 }

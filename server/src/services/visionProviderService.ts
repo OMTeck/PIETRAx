@@ -1,6 +1,6 @@
 ﻿import sharp from 'sharp';
 import { AppError } from '../http/errors.js';
-import { getVisualizerSettings } from './visualizerSettings.js';
+import { getVisualizerSettings, DEFAULT_VISION_PROMPT } from './visualizerSettings.js';
 import type { VisionProvider, VisionProviderType } from './visualizerSettings.js';
 import { normalizeSurfaceType } from './roboflowService.js';
 
@@ -76,16 +76,6 @@ export interface VisionTestResult {
   message: string;
   latencyMs: number;
 }
-
-const SURFACE_PROMPT = [
-  'You are analyzing an interior room photo for a surface-placement tool.',
-  'Identify the major planar surfaces and respond with ONLY JSON, no prose:',
-  '{"surfaces":[{"type":"FLOOR|WALL|CEILING|COUNTERTOP","confidence":0.0,"points":[{"x":0.0,"y":0.0}]}]}',
-  'Rules:',
-  '- "points" are normalized coordinates in 0..1 relative to the image (x from left, y from top) forming a closed polygon for that surface region.',
-  '- Return at most 4 surfaces. Use only the listed types.',
-  '- Omit any surface you cannot locate with confidence.',
-].join('\n');
 
 const PING_PROMPT = 'ping';
 
@@ -320,6 +310,9 @@ export async function analyzeSurfacesWithProvider(
   const label = VISION_PROVIDER_META[provider.providerType].label;
   assertUsable(provider);
 
+  const settings = await getVisualizerSettings();
+  const promptText = settings.vision.promptTemplate || DEFAULT_VISION_PROMPT;
+
   const { data, mime } = await prepareImage(imageBuffer, provider.maxImageDim);
   const width = (await sharp(data).metadata()).width ?? 0;
   const height = (await sharp(data).metadata()).height ?? 0;
@@ -328,7 +321,7 @@ export async function analyzeSurfacesWithProvider(
   }
 
   const { url, init } = buildRequest(provider, {
-    text: SURFACE_PROMPT,
+    text: promptText,
     dataUrl: `data:${mime};base64,${data.toString('base64')}`,
     mediaType: mime,
     data: data.toString('base64'),
@@ -339,7 +332,7 @@ export async function analyzeSurfacesWithProvider(
   const payload = parseJsonPayload(text) as { surfaces?: Array<{ type?: string; confidence?: number; points?: VisionPoint[] }> } | undefined;
   const surfaces = Array.isArray(payload?.surfaces) ? payload.surfaces : [];
 
-  const classMap = (await getVisualizerSettings()).analysis.classMap;
+  const classMap = settings.analysis.classMap;
   const segments: VisionSegment[] = surfaces
     .filter((s) => Array.isArray(s.points) && s.points.length >= 3)
     .map((s) => {
