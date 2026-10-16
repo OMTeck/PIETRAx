@@ -20,7 +20,7 @@ import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 
 const FALLBACK_PROMPT =
-  'Use image 0 as the base photo. Replace the {noun} with {material}, keeping the exact same room, walls, ceiling, furniture, camera angle, perspective and lighting. Photorealistic interior, high detail.';
+  'Repaint ONLY the {noun} with {material}, keeping the material exact color, tone, pattern, veining, gloss and finish. This is a strict photorealistic MATERIAL REPLACEMENT, not a redesign. STRICT RULES: (1) Do NOT change the shape or geometry of anything: keep the same room, perspective, camera angle, framing and proportions. (2) Do NOT change the color of anything except the {noun}: keep the overall color balance, walls, ceiling, floor, furniture, objects, decor, shadows and lighting exactly as in the original. (3) Do NOT add, remove, move, resize, reshape or restyle any object or surface. (4) Everything outside the {noun} must stay pixel-for-pixel identical. Output one photorealistic image: same scene, same composition, same room colors, material true to reference.';
 
 /** Mirrors the server defaults so the page still works before /config loads. */
 const FALLBACK_SURFACES: PubVisualizerSurface[] = [
@@ -299,8 +299,11 @@ export function VisualizerPage() {
         quality: editQuality,
         cropAspect: uploadMode ? undefined : displayAspect,
       });
+      const materialDesc = [material.enName || material.name, material.colourLabel, material.typeLabel]
+        .filter(Boolean)
+        .join(', ');
       const res = await publicApi.aiEditRoom({
-        prompt: buildMaterialPrompt(promptTemplate, material.enName || material.name, nounForSurface(surfaceId)),
+        prompt: buildMaterialPrompt(promptTemplate, materialDesc, nounForSurface(surfaceId)),
         image: compressed.dataUrl,
         mime: 'image/jpeg',
       });
