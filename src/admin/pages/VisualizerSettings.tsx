@@ -341,22 +341,31 @@ export function VisualizerSettingsPanel() {
 
       {/* Texture rendering */}
       <Card
-        title={<span className="flex items-center gap-2"><Layers className="h-4 w-4 text-stone-500" /> Texture rendering</span>}
-        actions={<Toggle checked={s.render.strictFidelity} onChange={(v) => setRender({ strictFidelity: v })} label="Strict Texture Fidelity" />}
+        title={<span className="flex items-center gap-2"><Layers className="h-4 w-4 text-stone-500" /> Stone installation rendering</span>}
+        actions={
+          <Select value={s.render.mode} onChange={(e) => setRender({ mode: e.target.value as 'realistic' | 'strict' })}>
+            <option value="realistic">Realistic installation</option>
+            <option value="strict">Strict (exact pixels)</option>
+          </Select>
+        }
       >
         <p className="mb-4 text-xs text-stone-500">
-          Strict mode maps the original material pixels directly onto the selected surface with no
-          generative regeneration, recolouring, relighting or blending. It is on by default.
+          Realistic mode installs the real product at its true physical size with perspective-correct
+          layout, joints and room-derived lighting — the material pattern and colour are never regenerated.
+          Strict mode maps the original pixels with no lighting or compositing.
         </p>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-3">
           <div className="flex items-end pb-1">
-            <Toggle checked={s.render.allowLighting} onChange={(v) => setRender({ allowLighting: v })} label="Allow optional environmental lighting" />
+            <Toggle checked={s.render.allowLighting} onChange={(v) => setRender({ allowLighting: v })} label="Allow room lighting" />
           </div>
-          <Field label="Default sampling" hint="Nearest keeps source RGB values exact.">
+          <Field label="Default sampling" hint="Nearest keeps source RGB values exact; bilinear is smoother.">
             <Select value={s.render.defaultSampling} onChange={(e) => setRender({ defaultSampling: e.target.value as 'nearest' | 'bilinear' })}>
               <option value="nearest">Nearest (exact)</option>
               <option value="bilinear">Bilinear</option>
             </Select>
+          </Field>
+          <Field label="Shadow strength" hint="Contact/ambient shadow at surface edges (0–1).">
+            <Input type="number" step="0.05" min="0" max="1" value={String(s.render.shadowStrength)} onChange={(e) => setRender({ shadowStrength: num(e.target.value, 0.4) })} />
           </Field>
         </div>
       </Card>

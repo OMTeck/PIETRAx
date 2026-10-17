@@ -19,10 +19,11 @@ import {
   coverCanvas,
   DEFAULT_TEXTURE_PARAMS,
   type TextureMapParams,
+  type InstallPattern,
 } from '@/lib/visualizer/textureMapper';
 import { pointsToClipPath, simplifyPolygon } from '@/lib/visualizer/geometry';
 import { downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
-import type { RoomLayout, Step, VisMaterial, NormalizedPoint } from '@/lib/visualizer/types';
+import type { RoomLayout, Step, VisMaterial, NormalizedPoint, SurfaceKind } from '@/lib/visualizer/types';
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 
@@ -59,9 +60,9 @@ export function VisualizerPage() {
   const presetAspect = behavior?.displayAspect ?? 16 / 10;
   const aiAnalysisEnabled = visualizerConfig?.analysis?.enabled !== false;
   const renderSettings = visualizerConfig?.render;
-  const strictFidelity = renderSettings?.strictFidelity !== false;
-  const allowLighting = renderSettings?.allowLighting === true;
-  const defaultSampling = renderSettings?.defaultSampling === 'bilinear' ? 'bilinear' : 'nearest';
+  const installMode: 'realistic' | 'strict' = renderSettings?.mode === 'strict' ? 'strict' : 'realistic';
+  const serverShadow = typeof renderSettings?.shadowStrength === 'number' ? renderSettings.shadowStrength : 0.4;
+  const defaultSampling: 'nearest' | 'bilinear' = renderSettings?.defaultSampling === 'nearest' ? 'nearest' : 'bilinear';
 
   const visMaterials: VisMaterial[] = useMemo(() => {
     return (visualizer?.materials ?? []).map((vm) => {
@@ -127,6 +128,13 @@ export function VisualizerPage() {
   const [compositeUrl, setCompositeUrl] = useState<string | null>(null);
   const [renderError, setRenderError] = useState(false);
   const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Room-scale calibration: a user-drawn reference of known real length.
+  const [calibOpen, setCalibOpen] = useState(false);
+  const [calibPoints, setCalibPoints] = useState<NormalizedPoint[]>([]);
+  const [calibLengthCm, setCalibLengthCm] = useState<string>('100');
+  const [calibPxPerMeter, setCalibPxPerMeter] = useState<number | null>(null);
+  const [calibImgAspect, setCalibImgAspect] = useState(1);
 
   /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
   useEffect(() => {
@@ -276,6 +284,48 @@ export function VisualizerPage() {
     return () => undefined;
   }, [cameraOpen]);
 
+  /** Maps a click on the calibration image to normalized image coordinates. */
+  const handleCalibClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const imgAspect = calibImgAspect || rect.width / rect.height;
+    const cAspect = rect.width / rect.height;
+    let dispW = rect.width;
+    let dispH = rect.height;
+    let offX = 0;
+    let offY = 0;
+    if (imgAspect > cAspect) {
+      dispH = rect.width / imgAspect;
+      offY = (rect.height - dispH) / 2;
+    } else {
+      dispW = rect.height * imgAspect;
+      offX = (rect.width - dispW) / 2;
+    }
+    const nx = (cx - offX) / dispW;
+    const ny = (cy - offY) / dispH;
+    if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+    setCalibPoints((prev) => (prev.length >= 2 ? [{ x: nx, y: ny }] : [...prev, { x: nx, y: ny }]));
+  };
+
+  /** Computes px-per-metre from the two reference points and the real length. */
+  const applyCalibration = async () => {
+    const base = uploadedImage ?? selectedRoom?.previewImage ?? null;
+    const lenM = Number(calibLengthCm) / 100;
+    if (!base || calibPoints.length !== 2 || !(lenM > 0)) return;
+    try {
+      const img = await loadImage(base);
+      const dx = (calibPoints[1].x - calibPoints[0].x) * img.naturalWidth;
+      const dy = (calibPoints[1].y - calibPoints[0].y) * img.naturalHeight;
+      const px = Math.hypot(dx, dy);
+      if (px < 4) return;
+      setCalibPxPerMeter(px / lenM);
+      setCalibOpen(false);
+    } catch {
+      setRenderError(true);
+    }
+  };
+
   const defaultUploadPolygon: Record<string, NormalizedPoint[]> = Object.fromEntries(
     surfacesConfig.map((s) => [s.id, s.polygon]),
   );
@@ -284,6 +334,18 @@ export function VisualizerPage() {
     aiSegments[surfaceId] ?? defaultUploadPolygon[surfaceId] ?? [
       { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 },
     ];
+
+  /** Resolves the physical kind of a surface (drives the installation model). */
+  const surfaceKindFor = (surfaceId: string): SurfaceKind => {
+    const raw = uploadMode
+      ? (surfaceConfigById[surfaceId]?.noun || surfaceConfigById[surfaceId]?.id || surfaceId)
+      : (selectedRoom?.surfaces.find((s) => s.id === surfaceId)?.nameEn || surfaceId);
+    const k = raw.toLowerCase();
+    if (k.includes('counter') || k.includes('island') || k.includes('cabinet') || k.includes('sink')) return 'countertop';
+    if (k.includes('ceiling')) return 'ceiling';
+    if (k.includes('wall') || k.includes('back')) return 'wall';
+    return 'floor';
+  };
 
   /** Maps a cloud result (surfaceType -> points in 0..1) into per-surface clips. */
   const handleAISegments = (result: { segments: { surfaceType: string; points: { x: number; y: number }[] }[]; width: number; height: number }) => {
@@ -328,15 +390,15 @@ export function VisualizerPage() {
       const aspect = uploadMode && imageAspect ? imageAspect : presetAspect;
       const box = coverCanvas(room, aspect, maxDimension ?? 1600);
       const imageW = room.naturalWidth || box.width;
-      const ppmBase = uploadMode && layout
-        ? layout.pxPerMeter
-        : Math.max(80, Math.round(imageW / 4));
+      const ppmBase = calibPxPerMeter
+        ?? (uploadMode && layout ? layout.pxPerMeter : Math.max(80, Math.round(imageW / 4)));
       const canvas = renderSurfaceTexture({
         roomImage: box,
         polygon,
         texture,
         params: textureParams,
         pxPerMeter: ppmBase * (box.width / imageW),
+        surfaceKind: surfaceKindFor(surfaceId),
       });
       compositeCanvasRef.current = canvas;
       setCompositeUrl(canvas.toDataURL('image/png'));
@@ -355,19 +417,22 @@ export function VisualizerPage() {
   useEffect(() => {
     const material = materialsRef.current.find((m) => m.id === selectedMaterialId);
     if (material) {
+      const strict = installMode === 'strict';
+      const base = paramsFromMaterial(material, strict ? 'neutral' : 'realistic');
       setTextureParams({
-        ...paramsFromMaterial(material),
-        sampling: strictFidelity ? 'nearest' : defaultSampling,
-        lighting: false,
+        ...base,
+        sampling: strict ? 'nearest' : defaultSampling,
+        lightingMode: strict ? 'neutral' : 'realistic',
+        shadowStrength: strict ? 0 : serverShadow,
       });
     }
-  }, [selectedMaterialId, strictFidelity, defaultSampling]);
+  }, [selectedMaterialId, installMode, defaultSampling, serverShadow]);
 
   // Re-render the composite whenever the inputs change.
   useEffect(() => {
     if (step !== 'result') return;
     void renderCompositeRef.current(1100);
-  }, [step, uploadedImage, selectedRoomId, selectedSurfaceId, selectedMaterialId, textureParams, uploadMode, layout, aiSegments, visMaterials]);
+  }, [step, uploadedImage, selectedRoomId, selectedSurfaceId, selectedMaterialId, textureParams, uploadMode, layout, aiSegments, visMaterials, calibPxPerMeter]);
 
   /** Pick a surface and move to the material step. */
   const selectSurface = (surfaceId: string) => {
@@ -738,7 +803,9 @@ export function VisualizerPage() {
                 {lang === 'ar' ? selectedSurface?.nameAr || selectedSurfaceId : selectedSurface?.nameEn || selectedSurfaceId}
               </span>
               {!showOriginal && compositeUrl && (
-                <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">Strict</span>
+                <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">
+                  {textureParams.lightingMode === 'realistic' ? 'Realistic' : 'Neutral'}
+                </span>
               )}
               {showOriginal && (
                 <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">{t('originalImage')}</span>
@@ -748,39 +815,86 @@ export function VisualizerPage() {
 
           {renderError && <p className="mt-3 text-xs text-red-700">Could not render the texture.</p>}
 
-          {/* Deterministic texture-mapping controls */}
+          {/* Realistic installation controls */}
           {selectedMaterial && (
             <div className="mt-6 border border-stone-200 bg-ivory p-5">
               <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-stone-800">Texture mapping</h3>
+                <h3 className="text-sm font-semibold text-stone-800">
+                  {lang === 'ar' ? 'التركيب الحقيقي' : 'Realistic installation'}
+                </h3>
                 <span className="text-[11px] uppercase tracking-wider text-stone-500">
-                  {strictFidelity ? 'Strict fidelity' : 'Standard'}
+                  {textureParams.lightingMode === 'realistic' ? 'Realistic lighting' : 'Neutral lighting'}
                 </span>
               </div>
+
+              {/* Material dimensions (default from the product) */}
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-                {([
-                  ['tileWidthCm', 'Tile width (cm)'],
-                  ['tileHeightCm', 'Tile height (cm)'],
-                  ['patternScale', 'Pattern scale'],
-                  ['rotationDeg', 'Rotation (deg)'],
-                  ['repeatX', 'Repeat X (0=auto)'],
-                  ['repeatY', 'Repeat Y (0=auto)'],
-                  ['groutWidthCm', 'Grout width (cm)'],
-                  ['offsetX', 'Offset X (tiles)'],
-                  ['offsetY', 'Offset Y (tiles)'],
-                ] as const).map(([key, label]) => (
-                  <label key={key} className="block text-xs text-stone-600">
-                    <span className="mb-1 block">{label}</span>
-                    <input
-                      type="number"
-                      className="w-full border border-stone-300 px-2 py-1.5 text-sm"
-                      value={String(textureParams[key])}
-                      onChange={(e) => setTextureParams({ ...textureParams, [key]: Number(e.target.value) } as TextureMapParams)}
-                    />
-                  </label>
-                ))}
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Grout color</span>
+                  <span className="mb-1 block">Piece width (cm)</span>
+                  <input
+                    type="number" min={1}
+                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                    value={textureParams.tileWidthCm}
+                    onChange={(e) => setTextureParams({ ...textureParams, tileWidthCm: Number(e.target.value) })}
+                  />
+                </label>
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Piece height (cm)</span>
+                  <input
+                    type="number" min={1}
+                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                    value={textureParams.tileHeightCm}
+                    onChange={(e) => setTextureParams({ ...textureParams, tileHeightCm: Number(e.target.value) })}
+                  />
+                </label>
+                <div className="flex items-end">
+                  <button
+                    onClick={() => setTextureParams({
+                      ...textureParams,
+                      tileWidthCm: textureParams.tileHeightCm,
+                      tileHeightCm: textureParams.tileWidthCm,
+                      rotationDeg: (textureParams.rotationDeg + 90) % 360,
+                    })}
+                    className="w-full border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900"
+                  >
+                    Orientation · 90°
+                  </button>
+                </div>
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Rotation (deg)</span>
+                  <input
+                    type="number"
+                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                    value={textureParams.rotationDeg}
+                    onChange={(e) => setTextureParams({ ...textureParams, rotationDeg: Number(e.target.value) })}
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mt-4">
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Installation pattern</span>
+                  <select
+                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                    value={textureParams.pattern}
+                    onChange={(e) => setTextureParams({ ...textureParams, pattern: e.target.value as InstallPattern })}
+                  >
+                    <option value="stack">Straight lay</option>
+                    <option value="running-bond">Running bond (½)</option>
+                    <option value="third-bond">Third bond (⅓)</option>
+                  </select>
+                </label>
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Joint width (mm)</span>
+                  <input
+                    type="number" min={0} step={0.5}
+                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                    value={Math.round(textureParams.groutWidthCm * 100) / 10}
+                    onChange={(e) => setTextureParams({ ...textureParams, groutWidthCm: Number(e.target.value) / 10 })}
+                  />
+                </label>
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Joint color</span>
                   <input
                     type="color"
                     className="h-9 w-full border border-stone-300"
@@ -788,8 +902,67 @@ export function VisualizerPage() {
                     onChange={(e) => setTextureParams({ ...textureParams, groutColor: e.target.value })}
                   />
                 </label>
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Pattern scale</span>
+                  <input
+                    type="number" min={0.1} step={0.1}
+                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                    value={textureParams.patternScale}
+                    onChange={(e) => setTextureParams({ ...textureParams, patternScale: Number(e.target.value) })}
+                  />
+                </label>
               </div>
+
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mt-4">
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Offset X (pieces)</span>
+                  <input
+                    type="number" step={0.1}
+                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                    value={textureParams.offsetX}
+                    onChange={(e) => setTextureParams({ ...textureParams, offsetX: Number(e.target.value) })}
+                  />
+                </label>
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Offset Y (pieces)</span>
+                  <input
+                    type="number" step={0.1}
+                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                    value={textureParams.offsetY}
+                    onChange={(e) => setTextureParams({ ...textureParams, offsetY: Number(e.target.value) })}
+                  />
+                </label>
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Lighting strength</span>
+                  <input
+                    type="range" min={0} max={1} step={0.05}
+                    className="w-full"
+                    value={textureParams.lightingStrength}
+                    onChange={(e) => setTextureParams({ ...textureParams, lightingStrength: Number(e.target.value) })}
+                  />
+                </label>
+                {surfaceKindFor(selectedSurfaceId || '') === 'countertop' && (
+                  <label className="block text-xs text-stone-600">
+                    <span className="mb-1 block">Edge thickness (cm)</span>
+                    <input
+                      type="number" min={0} step={0.5}
+                      className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                      value={textureParams.edgeThicknessCm}
+                      onChange={(e) => setTextureParams({ ...textureParams, edgeThicknessCm: Number(e.target.value) })}
+                    />
+                  </label>
+                )}
+              </div>
+
               <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-stone-700">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={textureParams.lightingMode === 'realistic'}
+                    onChange={(e) => setTextureParams({ ...textureParams, lightingMode: e.target.checked ? 'realistic' : 'neutral' })}
+                  />
+                  Realistic lighting
+                </label>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" checked={textureParams.flipX} onChange={(e) => setTextureParams({ ...textureParams, flipX: e.target.checked })} />
                   Flip horizontal
@@ -805,16 +978,36 @@ export function VisualizerPage() {
                     value={textureParams.sampling}
                     onChange={(e) => setTextureParams({ ...textureParams, sampling: e.target.value as 'nearest' | 'bilinear' })}
                   >
-                    <option value="nearest">Nearest (exact)</option>
                     <option value="bilinear">Bilinear</option>
+                    <option value="nearest">Nearest (exact)</option>
                   </select>
                 </label>
-                {allowLighting && (
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={textureParams.lighting} onChange={(e) => setTextureParams({ ...textureParams, lighting: e.target.checked })} />
-                    Environmental lighting
-                  </label>
-                )}
+              </div>
+
+              {/* Room scale / calibration */}
+              <div className="mt-5 border-t border-stone-200 pt-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-stone-600">
+                  <span className="uppercase tracking-wider mr-2">Room scale</span>
+                  {calibPxPerMeter
+                    ? <span className="text-stone-900">Calibrated · {calibPxPerMeter.toFixed(0)} px/m</span>
+                    : <span className="text-stone-500">Estimated — calibrate for exact size</span>}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setCalibPoints([]); setCalibOpen(true); }}
+                    className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900"
+                  >
+                    Calibrate scale
+                  </button>
+                  {calibPxPerMeter && (
+                    <button
+                      onClick={() => setCalibPxPerMeter(null)}
+                      className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -905,6 +1098,86 @@ export function VisualizerPage() {
                   {t('capturePhoto')}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {calibOpen && roomImage && (
+        <div className="fixed inset-0 z-[100] bg-stone-950/90 flex items-center justify-center p-4">
+          <div className="w-full max-w-3xl bg-white max-h-[90vh] overflow-auto">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200">
+              <span className="text-xs tracking-[0.2em] uppercase text-stone-600">
+                {lang === 'ar' ? 'معايرة مقياس الغرفة' : 'Calibrate room scale'}
+              </span>
+              <button onClick={() => setCalibOpen(false)} className="text-stone-500 hover:text-stone-900" aria-label={t('cancel')}>
+                <X size={20} strokeWidth={1.5} />
+              </button>
+            </div>
+            <div className="p-5">
+              <p className="text-xs text-stone-500 mb-3">
+                {lang === 'ar'
+                  ? 'انقر على نقطتين في الصورة وأدخل المسافة الحقيقية بينهما لضبط المقياس الفعلي للتركيب.'
+                  : 'Click two points on the photo, then enter the real distance between them so the stone is installed at true size.'}
+              </p>
+              <div
+                className="relative w-full bg-stone-900 select-none cursor-crosshair"
+                style={{ aspectRatio: `${calibImgAspect}` }}
+                onClick={handleCalibClick}
+              >
+                <img
+                  src={roomImage}
+                  alt="calibrate"
+                  className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                  onLoad={(e) => setCalibImgAspect(e.currentTarget.naturalWidth / Math.max(1, e.currentTarget.naturalHeight))}
+                />
+                {calibPoints.length === 2 && (
+                  <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                    <line
+                      x1={`${calibPoints[0].x * 100}%`}
+                      y1={`${calibPoints[0].y * 100}%`}
+                      x2={`${calibPoints[1].x * 100}%`}
+                      y2={`${calibPoints[1].y * 100}%`}
+                      stroke="#b8860b"
+                      strokeWidth={2}
+                    />
+                  </svg>
+                )}
+                {calibPoints.map((p, i) => (
+                  <span
+                    key={i}
+                    className="absolute w-3 h-3 rounded-full bg-amber-600 border border-white"
+                    style={{ left: `calc(${p.x * 100}% - 6px)`, top: `calc(${p.y * 100}% - 6px)` }}
+                  />
+                ))}
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-stone-600">
+                  {lang === 'ar' ? 'المسافة الحقيقية' : 'Real distance'}
+                  <input
+                    type="number" min={1}
+                    className="w-24 border border-stone-300 px-2 py-1.5 text-sm"
+                    value={calibLengthCm}
+                    onChange={(e) => setCalibLengthCm(e.target.value)}
+                  />
+                  cm
+                </label>
+                <span className="text-xs text-stone-400">{calibPoints.length}/2 {lang === 'ar' ? 'نقاط' : 'points'}</span>
+                <div className="flex-1" />
+                <button
+                  onClick={() => setCalibPoints([])}
+                  className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900"
+                >
+                  {lang === 'ar' ? 'إعادة' : 'Reset'}
+                </button>
+                <button
+                  disabled={calibPoints.length !== 2}
+                  onClick={applyCalibration}
+                  className="bg-stone-900 text-ivory px-4 py-1.5 text-xs uppercase tracking-wider disabled:opacity-40"
+                >
+                  {lang === 'ar' ? 'تطبيق' : 'Apply'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

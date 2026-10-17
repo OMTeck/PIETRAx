@@ -1,64 +1,84 @@
 /**
- * Deterministic texture mapping engine.
+ * Realistic stone installation engine.
  *
- * This module maps a source texture onto a room surface using a projective
- * (homography) transform followed by tiling/repetition. It never invents,
- * regenerates or recolours pixels: every output pixel inside the selected
- * surface is a direct sample of the source texture (nearest-neighbour by
- * default, so RGB values are bit-identical to the source).
+ * Maps a real material texture onto a room surface the way an installer would
+ * lay it: the layout is computed in real-world units (metres) from the product's
+ * physical dimensions, so each piece has correct scale and aspect, joints fall
+ * between pieces, and pieces are cut cleanly at the surface boundary.
  *
- * AI/computer vision is used ONLY upstream to produce the surface polygon.
- * Everything here is pure geometry + sampling.
+ * The material's *identity* is preserved: every output pixel is a sample of the
+ * source texture. It is transformed geometrically and modulated by the room's
+ * own luminance (lighting/shadow) — never regenerated, recoloured or repainted.
+ *
+ * AI/computer vision is used ONLY upstream to produce the surface polygon and
+ * (optionally) geometry hints. Everything here is pure geometry + sampling.
  */
 
-import type { NormalizedPoint } from './types';
+import type { NormalizedPoint, SurfaceKind } from './types';
 
 export type SamplingMode = 'nearest' | 'bilinear';
+export type InstallPattern = 'stack' | 'running-bond' | 'third-bond';
+export type LightingMode = 'neutral' | 'realistic';
 
 export interface TextureMapParams {
-  /** Physical tile width in centimetres (before patternScale). */
+  /** Physical piece width in centimetres. */
   tileWidthCm: number;
-  /** Physical tile height in centimetres (before patternScale). */
+  /** Physical piece height in centimetres. */
   tileHeightCm: number;
-  /** Multiplier applied to the tile size. 1 = real size, 2 = twice as large. */
+  /** Multiplier applied to the piece size. 1 = real size, 2 = twice as large. */
   patternScale: number;
   /** Pattern rotation within the surface plane, degrees. */
   rotationDeg: number;
-  /** Pattern offset in tile units. */
+  /** Pattern offset in piece units. */
   offsetX: number;
   offsetY: number;
-  /** Explicit repeat count across the surface. 0 = derive from tile size. */
+  /** Explicit repeat count across the surface. 0 = derive from piece size. */
   repeatX: number;
   repeatY: number;
-  /** Grout gap width in centimetres (0 = none). */
+  /** Joint width in centimetres (0 = butt-jointed). */
   groutWidthCm: number;
-  /** Grout colour as #rrggbb. */
+  /** Joint colour as #rrggbb. */
   groutColor: string;
   /** Mirror the pattern horizontally. */
   flipX: boolean;
   /** Mirror the pattern vertically. */
   flipY: boolean;
-  /** Nearest = exact source pixels (strict). Bilinear = geometric smoothing. */
+  /** Nearest = exact source pixels. Bilinear = smoother geometric sampling. */
   sampling: SamplingMode;
-  /** Optional environmental lighting. OFF in Strict Texture Fidelity mode. */
-  lighting: boolean;
+  /** Installation bond/layout. */
+  pattern: InstallPattern;
+  /** Neutral flat light, or realistic light derived from the room photo. */
+  lightingMode: LightingMode;
+  /** How strongly the room lighting modulates the stone (0..1). */
+  lightingStrength: number;
+  /** Ambient/contact shadow strength at surface edges (0..1). */
+  shadowStrength: number;
+  /** Blend the surface boundary into the room over N px (0 = hard edge). */
+  featherPx: number;
+  /** Front-edge thickness for countertops in cm (0 = none). */
+  edgeThicknessCm: number;
 }
 
 export const DEFAULT_TEXTURE_PARAMS: TextureMapParams = {
   tileWidthCm: 60,
-  tileHeightCm: 60,
+  tileHeightCm: 120,
   patternScale: 1,
   rotationDeg: 0,
   offsetX: 0,
   offsetY: 0,
   repeatX: 0,
   repeatY: 0,
-  groutWidthCm: 0,
-  groutColor: '#cccccc',
+  groutWidthCm: 0.2,
+  groutColor: '#c9c4bb',
   flipX: false,
   flipY: false,
-  sampling: 'nearest',
-  lighting: false,
+  sampling: 'bilinear',
+  pattern: 'stack',
+  lightingMode: 'realistic',
+  lightingStrength: 0.85,
+  shadowStrength: 0.4,
+  featherPx: 2,
+  edgeThicknessCm: 0,
 };
 
 export interface RenderSurfaceOptions {
@@ -74,8 +94,8 @@ export interface RenderSurfaceOptions {
   pxPerMeter: number;
   /** Cap the render long edge (keeps previews fast). */
   maxDimension?: number;
-  /** Optional shading multiplier 0..1 applied only when params.lighting. */
-  lightShade?: number;
+  /** Which kind of surface we are dressing (drives countertop edge, etc.). */
+  surfaceKind?: SurfaceKind;
 }
 
 interface Pt {
@@ -117,8 +137,7 @@ function convexHull(points: Pt[]): Pt[] {
 
 /**
  * Orders a set of points as a quad: clockwise in image space (y down), starting
- * from the top-left-most corner. This makes the homography correspondence
- * (unit-square corner -> quad corner) stable regardless of input ordering.
+ * from the top-left-most corner. Keeps the homography correspondence stable.
  */
 function orderQuad(points: Pt[]): Pt[] {
   if (points.length < 3) return points;
@@ -142,12 +161,7 @@ function orderQuad(points: Pt[]): Pt[] {
   return [...ordered.slice(start), ...ordered.slice(0, start)];
 }
 
-/**
- * Fit a quadrilateral to an arbitrary surface polygon. Surfaces are planar
- * regions, so four corners are enough to define the projective mapping. We
- * pick, for each quadrant around the centroid, the farthest point — this is
- * stable for the trapezoids produced by perspective room photography.
- */
+/** Fit a quadrilateral to an arbitrary surface polygon (planar region). */
 function fitQuad(points: Pt[]): Pt[] {
   const hull = convexHull(points);
   if (hull.length <= 4) return orderQuad(hull);
@@ -156,7 +170,7 @@ function fitQuad(points: Pt[]): Pt[] {
   const corners: (Pt | null)[] = [null, null, null, null];
   const best: number[] = [-1, -1, -1, -1];
   for (const p of hull) {
-    const q = (p.y < cy ? 0 : 2) + (p.x < cx ? 0 : 1); // 0 TL, 1 TR, 2 BL, 3 BR
+    const q = (p.y < cy ? 0 : 2) + (p.x < cx ? 0 : 1);
     const d = (p.x - cx) ** 2 + (p.y - cy) ** 2;
     if (d > best[q]) {
       best[q] = d;
@@ -189,9 +203,7 @@ function solve8(a: number[][], b: number[]): number[] | null {
   return m.map((row, i) => row[n] / row[i]);
 }
 
-/**
- * Homography (h00..h21, h22 = 1) mapping `src` -> `dst` for four points.
- */
+/** Homography (h00..h21, h22 = 1) mapping `src` -> `dst` for four points. */
 function homography(src: Pt[], dst: Pt[]): number[] | null {
   const a: number[][] = [];
   const b: number[] = [];
@@ -224,10 +236,29 @@ function pointInPolygon(x: number, y: number, poly: Pt[]): boolean {
   return inside;
 }
 
+function distToSegment(px: number, py: number, a: Pt, b: Pt): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - a.x) * dx + (py - a.y) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+}
+
+function distToEdges(px: number, py: number, poly: Pt[]): number {
+  let min = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const d = distToSegment(px, py, poly[i], poly[(i + 1) % poly.length]);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
 function parseColor(hex: string): { r: number; g: number; b: number } {
   const m = hex.replace('#', '');
   const full = m.length === 3 ? m.split('').map((c) => c + c).join('') : m.padEnd(6, '0').slice(0, 6);
   const n = parseInt(full, 16);
+  if (!Number.isFinite(n)) return { r: 200, g: 200, b: 200 };
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
@@ -269,13 +300,37 @@ function sampleTexture(
   };
 }
 
+/** Separable box blur over a luminance field. */
+function boxBlur(src: Float32Array, w: number, h: number, r: number): Float32Array {
+  const tmp = new Float32Array(w * h);
+  const out = new Float32Array(w * h);
+  const denom = 2 * r + 1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let sum = 0;
+    for (let x = -r; x <= r; x++) sum += src[row + Math.min(w - 1, Math.max(0, x))];
+    for (let x = 0; x < w; x++) {
+      tmp[row + x] = sum / denom;
+      sum += src[row + Math.min(w - 1, x + r + 1)] - src[row + Math.max(0, x - r)];
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let y = -r; y <= r; y++) sum += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = sum / denom;
+      sum += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x];
+    }
+  }
+  return out;
+}
+
 /**
- * Renders the source texture onto the room image inside `polygon` using a
- * deterministic projective mapping. Returns a new canvas; the inputs are not
- * modified.
+ * Renders the material onto the room image inside `polygon` as a realistic
+ * installation. Returns a new canvas; the inputs are not modified.
  */
 export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElement {
-  const { roomImage, polygon, texture, params, pxPerMeter, maxDimension, lightShade } = opts;
+  const { roomImage, polygon, texture, params, pxPerMeter, maxDimension, surfaceKind } = opts;
   const srcW = roomImage instanceof HTMLCanvasElement ? roomImage.width : roomImage.naturalWidth;
   const srcH = roomImage instanceof HTMLCanvasElement ? roomImage.height : roomImage.naturalHeight;
   if (!srcW || !srcH) throw new Error('Room image has no dimensions');
@@ -333,8 +388,8 @@ export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElem
   const cy = surfaceHm / 2;
 
   const groutWm = Math.max(0, params.groutWidthCm / 100);
-  const groutX = groutWm / tileWm;
-  const groutY = groutWm / tileHm;
+  const groutX = Math.min(0.6, groutWm / tileWm);
+  const groutY = Math.min(0.6, groutWm / tileHm);
   const grout = parseColor(params.groutColor || '#cccccc');
 
   const minX = Math.max(0, Math.floor(Math.min(...quad.map((p) => p.x))));
@@ -342,7 +397,34 @@ export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElem
   const minY = Math.max(0, Math.floor(Math.min(...quad.map((p) => p.y))));
   const maxY = Math.min(H - 1, Math.ceil(Math.max(...quad.map((p) => p.y))));
 
-  const shade = params.lighting ? Math.max(0, Math.min(1.4, lightShade ?? 1)) : 1;
+  // --- Lighting field derived from the room photograph -----------------------
+  // Only brightness is modulated; hue/pattern of the stone are untouched.
+  const useLight = params.lightingMode === 'realistic' && params.lightingStrength > 0;
+  let luma: Float32Array | null = null;
+  let meanLuma = 0;
+  if (useLight) {
+    luma = new Float32Array(W * H);
+    for (let i = 0; i < W * H; i++) {
+      luma[i] = 0.299 * pixels[i * 4] + 0.587 * pixels[i * 4 + 1] + 0.114 * pixels[i * 4 + 2];
+    }
+    const radius = Math.max(2, Math.round(Math.min(W, H) / 120));
+    luma = boxBlur(luma, W, H, radius);
+    let acc = 0;
+    let count = 0;
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (!pointInPolygon(x + 0.5, y + 0.5, poly)) continue;
+        acc += luma[y * W + x];
+        count++;
+      }
+    }
+    meanLuma = count > 0 ? acc / count : 0;
+  }
+
+  const feather = Math.max(0, params.featherPx);
+  const shadowStrength = Math.max(0, Math.min(1, params.shadowStrength));
+  const shadowBand = Math.max(6, Math.min(widthPx, heightPx) * 0.05);
+  const lightStrength = Math.max(0, Math.min(1, params.lightingStrength));
 
   for (let y = minY; y <= maxY; y++) {
     for (let x = minX; x <= maxX; x++) {
@@ -352,6 +434,7 @@ export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElem
       const uv = applyH(hi, px, py);
       if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) continue;
 
+      // Physical position on the surface (metres), rotated about the centre.
       let lx = uv.x * surfaceWm;
       let ly = uv.y * surfaceHm;
       const dx = lx - cx;
@@ -359,41 +442,97 @@ export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElem
       lx = cx + dx * cos - dy * sin;
       ly = cy + dx * sin + dy * cos;
 
-      let tx = lx / tileWm + params.offsetX;
-      let ty = ly / tileHm + params.offsetY;
-      if (params.flipX) tx = -tx;
-      if (params.flipY) ty = -ty;
+      // Piece grid in real-world units, with the chosen bond.
+      const gyRaw = ly / tileHm + params.offsetY;
+      const row = Math.floor(gyRaw);
+      let bond = 0;
+      if (params.pattern === 'running-bond') bond = ((row % 2) + 2) % 2 === 0 ? 0 : 0.5;
+      else if (params.pattern === 'third-bond') bond = (((row % 3) + 3) % 3) / 3;
 
-      const fx = tx - Math.floor(tx);
-      const fy = ty - Math.floor(ty);
-      const ddx = Math.min(fx, 1 - fx);
-      const ddy = Math.min(fy, 1 - fy);
+      let gx = lx / tileWm + params.offsetX + bond;
+      let gy = gyRaw;
+      if (params.flipX) gx = -gx;
+      if (params.flipY) gy = -gy;
+
+      const fx = gx - Math.floor(gx);
+      const fy = gy - Math.floor(gy);
 
       let r: number;
       let g: number;
       let b: number;
-      if (ddx < groutX || ddy < groutY) {
+      if ((groutX > 0 && fx < groutX) || (groutY > 0 && fy < groutY)) {
         r = grout.r;
         g = grout.g;
         b = grout.b;
       } else {
-        const c = sampleTexture(texData, texW, texH, fx, fy, params.sampling);
+        const u = groutX > 0 ? (fx - groutX) / (1 - groutX) : fx;
+        const v = groutY > 0 ? (fy - groutY) / (1 - groutY) : fy;
+        const c = sampleTexture(texData, texW, texH, u, v, params.sampling);
         r = c.r;
         g = c.g;
         b = c.b;
       }
 
-      if (params.lighting) {
-        r = Math.min(255, Math.round(r * shade));
-        g = Math.min(255, Math.round(g * shade));
-        b = Math.min(255, Math.round(b * shade));
+      // Realistic lighting: modulate brightness by the room's own luminance.
+      if (useLight && luma) {
+        const l = luma[y * W + x];
+        const ratio = meanLuma > 1 ? l / meanLuma : 1;
+        const shade = Math.max(0.45, Math.min(1.6, 1 + (ratio - 1) * lightStrength));
+        r = Math.min(255, r * shade);
+        g = Math.min(255, g * shade);
+        b = Math.min(255, b * shade);
+      }
+
+      // Contact/ambient shadow + boundary feather (single distance pass).
+      let alpha = 1;
+      if (shadowStrength > 0 || feather > 0) {
+        const edge = distToEdges(px, py, poly);
+        if (shadowStrength > 0 && edge < shadowBand) {
+          const t = 1 - edge / shadowBand;
+          const darken = 1 - shadowStrength * t * t * 0.6;
+          r *= darken;
+          g *= darken;
+          b *= darken;
+        }
+        if (feather > 0) alpha = Math.max(0, Math.min(1, edge / feather + 0.25));
       }
 
       const idx = (y * W + x) * 4;
-      pixels[idx] = r;
-      pixels[idx + 1] = g;
-      pixels[idx + 2] = b;
+      if (alpha >= 1) {
+        pixels[idx] = r;
+        pixels[idx + 1] = g;
+        pixels[idx + 2] = b;
+      } else {
+        pixels[idx] = r * alpha + pixels[idx] * (1 - alpha);
+        pixels[idx + 1] = g * alpha + pixels[idx + 1] * (1 - alpha);
+        pixels[idx + 2] = b * alpha + pixels[idx + 2] * (1 - alpha);
+      }
       pixels[idx + 3] = 255;
+    }
+  }
+
+  // --- Countertop front edge (material thickness) ---------------------------
+  if (surfaceKind === 'countertop' && params.edgeThicknessCm > 0) {
+    const edgePx = Math.max(2, Math.round((params.edgeThicknessCm / 100) * ppm * 0.7));
+    for (let x = minX; x <= maxX; x++) {
+      // Find the lowest inside pixel in this column (the front edge).
+      let bottom = -1;
+      for (let y = maxY; y >= minY; y--) {
+        if (pointInPolygon(x + 0.5, y + 0.5, poly)) { bottom = y; break; }
+      }
+      if (bottom < 0) continue;
+      const uv = applyH(hi, x + 0.5, bottom + 0.5);
+      const c = sampleTexture(texData, texW, texH, uv.x, uv.y, params.sampling);
+      for (let d = 1; d <= edgePx; d++) {
+        const y = bottom + d;
+        if (y > H - 1) break;
+        const fade = 1 - (d / edgePx) * 0.45;
+        const idx = (y * W + x) * 4;
+        pixels[idx] = c.r * fade * 0.85;
+        pixels[idx + 1] = c.g * fade * 0.85;
+        pixels[idx + 2] = c.b * fade * 0.85;
+        pixels[idx + 3] = 255;
+      }
     }
   }
 
@@ -421,7 +560,6 @@ export function coverCanvas(img: HTMLImageElement, aspect: number, maxDimension 
   const w = img.naturalWidth || 1;
   const h = img.naturalHeight || 1;
   const a = aspect > 0 && Number.isFinite(aspect) ? aspect : w / h;
-  // Never enlarge beyond the source: the export must stay lossless.
   const longEdge = Math.max(1, Math.min(maxDimension, Math.max(w, h)));
   const cw = a >= 1 ? longEdge : Math.max(1, Math.round(longEdge * a));
   const ch = a >= 1 ? Math.max(1, Math.round(longEdge / a)) : longEdge;
@@ -430,9 +568,9 @@ export function coverCanvas(img: HTMLImageElement, aspect: number, maxDimension 
   c.height = ch;
   const ctx = c.getContext('2d');
   if (!ctx) return c;
-  const scale = Math.max(cw / w, ch / h);
-  const dw = w * scale;
-  const dh = h * scale;
+  const s = Math.max(cw / w, ch / h);
+  const dw = w * s;
+  const dh = h * s;
   ctx.drawImage(img, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
   return c;
 }
@@ -448,22 +586,63 @@ export function parseClipPath(path: string): NormalizedPoint[] {
     .map((pair) => ({ x: parseFloat(pair[0]) / 100, y: parseFloat(pair[1]) / 100 }));
 }
 
-/** Derives mapping defaults from a material's stored config. */
-export function paramsFromMaterial(material: {
-  tileWidth?: number | null;
-  tileHeight?: number | null;
-  patternScale?: number | null;
-  rotation?: number | null;
-  groutWidth?: number | null;
-  groutColor?: string | null;
-}): TextureMapParams {
+/** Parses a product size label such as "60×120" or "60 x 120 cm" into cm. */
+export function parseSizeCm(label: string): { w: number; h: number } | null {
+  const m = label.replace(/×/g, 'x').replace(/[xX]/g, 'x').match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const w = parseFloat(m[1]);
+  const h = parseFloat(m[2]);
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+  return { w, h };
+}
+
+/** Typical marble/stone slab footprint used when only "Slab" is known. */
+const SLAB_DIMENSIONS = { w: 280, h: 160 };
+
+/**
+ * Derives realistic installation defaults from a material's stored config and
+ * product dimensions. Real product measurements always win over the fallback.
+ */
+export function paramsFromMaterial(
+  material: {
+    tileWidth?: number | null;
+    tileHeight?: number | null;
+    patternScale?: number | null;
+    rotation?: number | null;
+    groutWidth?: number | null;
+    groutColor?: string | null;
+    sizeLabel?: string | null;
+  },
+  mode: LightingMode = 'realistic',
+): TextureMapParams {
+  let w = material.tileWidth && material.tileWidth > 0 ? material.tileWidth : 0;
+  let h = material.tileHeight && material.tileHeight > 0 ? material.tileHeight : 0;
+  if ((!w || !h) && material.sizeLabel) {
+    const parsed = parseSizeCm(material.sizeLabel);
+    if (parsed) {
+      w = parsed.w;
+      h = parsed.h;
+    } else if (/slab/i.test(material.sizeLabel)) {
+      w = SLAB_DIMENSIONS.w;
+      h = SLAB_DIMENSIONS.h;
+    }
+  }
+  if (!w || !h) {
+    w = DEFAULT_TEXTURE_PARAMS.tileWidthCm;
+    h = DEFAULT_TEXTURE_PARAMS.tileHeightCm;
+  }
+  const strict = mode === 'neutral';
   return {
     ...DEFAULT_TEXTURE_PARAMS,
-    tileWidthCm: material.tileWidth && material.tileWidth > 0 ? material.tileWidth : DEFAULT_TEXTURE_PARAMS.tileWidthCm,
-    tileHeightCm: material.tileHeight && material.tileHeight > 0 ? material.tileHeight : DEFAULT_TEXTURE_PARAMS.tileHeightCm,
+    tileWidthCm: w,
+    tileHeightCm: h,
     patternScale: material.patternScale && material.patternScale > 0 ? material.patternScale : 1,
     rotationDeg: material.rotation ?? 0,
-    groutWidthCm: material.groutWidth && material.groutWidth > 0 ? material.groutWidth : 0,
+    groutWidthCm: material.groutWidth && material.groutWidth > 0 ? material.groutWidth : DEFAULT_TEXTURE_PARAMS.groutWidthCm,
     groutColor: material.groutColor || DEFAULT_TEXTURE_PARAMS.groutColor,
+    sampling: strict ? 'nearest' : 'bilinear',
+    lightingMode: strict ? 'neutral' : 'realistic',
+    shadowStrength: strict ? 0 : DEFAULT_TEXTURE_PARAMS.shadowStrength,
+    featherPx: strict ? 0 : DEFAULT_TEXTURE_PARAMS.featherPx,
   };
 }

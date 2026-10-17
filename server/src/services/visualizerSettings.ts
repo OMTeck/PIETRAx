@@ -123,9 +123,11 @@ export const visualizerSettingsSchema = z.object({
     .default({}),
   render: z
     .object({
-      strictFidelity: z.boolean().default(true),
-      allowLighting: z.boolean().default(false),
-      defaultSampling: z.enum(['nearest', 'bilinear']).default('nearest'),
+      mode: z.enum(['realistic', 'strict']).default('realistic'),
+      strictFidelity: z.boolean().default(false),
+      allowLighting: z.boolean().default(true),
+      defaultSampling: z.enum(['nearest', 'bilinear']).default('bilinear'),
+      shadowStrength: z.coerce.number().min(0).max(1).default(0.4),
     })
     .default({}),
 });
@@ -138,7 +140,13 @@ export interface PublicVisualizerConfig {
   features: VisualizerSettings['features'];
   analysis: { enabled: boolean; autoApply: boolean };
   edit: { enabled: boolean; maxInputDim: number; quality: number; promptTemplate: string };
-  render: { strictFidelity: boolean; allowLighting: boolean; defaultSampling: 'nearest' | 'bilinear' };
+  render: {
+    mode: 'realistic' | 'strict';
+    strictFidelity: boolean;
+    allowLighting: boolean;
+    defaultSampling: 'nearest' | 'bilinear';
+    shadowStrength: number;
+  };
   behavior: VisualizerSettings['behavior'];
 }
 
@@ -233,9 +241,11 @@ function buildDefaults(): VisualizerSettings {
       providers: [],
     },
     render: {
-      strictFidelity: true,
-      allowLighting: false,
-      defaultSampling: 'nearest',
+      mode: 'realistic',
+      strictFidelity: false,
+      allowLighting: true,
+      defaultSampling: 'bilinear',
+      shadowStrength: 0.4,
     },
   };
 }
@@ -367,9 +377,11 @@ export async function getPublicVisualizerConfig(): Promise<PublicVisualizerConfi
       promptTemplate: s.edit.promptTemplate,
     },
     render: {
+      mode: s.render.mode,
       strictFidelity: s.render.strictFidelity,
       allowLighting: s.render.allowLighting,
       defaultSampling: s.render.defaultSampling,
+      shadowStrength: s.render.shadowStrength,
     },
     behavior: s.behavior,
   };

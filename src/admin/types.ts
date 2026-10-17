@@ -408,9 +408,11 @@ export interface VisualizerSettings {
     providers: VisionProvider[];
   };
   render: {
+    mode: 'realistic' | 'strict';
     strictFidelity: boolean;
     allowLighting: boolean;
     defaultSampling: 'nearest' | 'bilinear';
+    shadowStrength: number;
   };
 }
 

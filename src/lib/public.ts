@@ -167,9 +167,11 @@ export interface PubVisualizerConfig {
   analysis: { enabled: boolean; autoApply: boolean };
   edit: { enabled: boolean; maxInputDim: number; quality: number; promptTemplate: string };
   render: {
+    mode: 'realistic' | 'strict';
     strictFidelity: boolean;
     allowLighting: boolean;
     defaultSampling: 'nearest' | 'bilinear';
+    shadowStrength: number;
   };
   behavior: {
     displayAspect: number;
