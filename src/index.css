@@ -10,7 +10,7 @@
   }
   body {
     @apply bg-ivory text-stone-900 font-sans antialiased;
-    overflow-x: hidden;
+    overflow-x: clip;
   }
   ::selection {
     @apply bg-stone-900 text-ivory;
