@@ -5,6 +5,8 @@
 @layer base {
   html {
     scroll-behavior: smooth;
+    background-color: var(--page-bg, #f8f6f1);
+    transition: background-color 0.4s ease;
   }
   body {
     @apply bg-ivory text-stone-900 font-sans antialiased;
@@ -12,6 +14,14 @@
   }
   ::selection {
     @apply bg-stone-900 text-ivory;
+  }
+  /* Cross-section theme morph (light↔dark chapters) — drives the header and the
+     page's overscroll backdrop. Sections keep their own backgrounds. */
+  :root {
+    --page-bg: #f8f6f1;
+  }
+  :root[data-chapter='dark'] {
+    --page-bg: #1a1614;
   }
 }
 
@@ -77,4 +87,56 @@
 @keyframes shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+/* Sticky-stacked chaptered cards — each card pins at a staggered top and later
+   cards slide over it (z-index ascending). Pure layout; JS only adds recede. */
+.card-stack {
+  isolation: isolate; /* own stacking context for the cards */
+}
+.stack-card {
+  position: sticky;
+  top: calc(88px + var(--i, 0) * 16px); /* below the sticky nav + deck depth */
+  z-index: calc(var(--i, 0) + 1);
+  margin-bottom: 24px;
+  border-radius: 20px;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 24px 60px -30px rgba(38, 34, 32, 0.35);
+  transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+  will-change: transform;
+}
+.stack-card:last-child {
+  margin-bottom: 0;
+}
+@media (min-width: 768px) {
+  .stack-card {
+    min-height: 70vh;
+  }
+}
+
+/* Ambient / idle float — so the page still breathes when scrolling stops. */
+@keyframes float {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(10px); }
+}
+.animate-float {
+  animation: float 6s ease-in-out infinite alternate;
+}
+
+/* Reduced motion: drop the recede enhancement and ambient loops (cards still
+   stack — that is layout, not motion). */
+@media (prefers-reduced-motion: reduce) {
+  html { transition: none; }
+  .stack-card {
+    transform: none !important;
+    opacity: 1 !important;
+    transition: none !important;
+  }
+  .animate-float {
+    animation: none !important;
+  }
+  .animate-slow-zoom {
+    animation: none !important;
+  }
 }

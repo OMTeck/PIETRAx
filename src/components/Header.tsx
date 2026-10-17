@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Search, Heart, Menu, X, Globe } from 'lucide-react';
 import { useLang } from '@/context/LanguageContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { useRoute } from '@/context/RouteContext';
 import { useCatalog } from '@/context/CatalogContext';
+import { useChapterTheme, useScrollScene } from '@/lib/motion';
 import { companySettings } from '@/lib/public';
 import type { TranslationKey } from '@/data/i18n';
 
@@ -15,12 +16,25 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
   const brand = companySettings(settings).nameEn || 'PIETRA';
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const chapter = useChapterTheme(path);
+  const barRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 60);
-    window.addEventListener('scroll', onScroll);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
+
+  // Thin scroll-progress bar bound to the damped document ratio.
+  useScrollScene(barRef, ({ docProgress }) => {
+    if (barRef.current) barRef.current.style.transform = `scaleX(${docProgress.toFixed(4)})`;
+  });
+
+  // Chapter-adaptive nav: transparent with light text over dark chapters, frosted
+  // ivory with dark text over light chapters (and while scrolled on plain pages).
+  const overDark = chapter === 'dark';
+  const transparentNav = !scrolled || overDark;
 
   const navItems: { key: TranslationKey; path: string }[] = [
     { key: 'home', path: '/' },
@@ -43,17 +57,25 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
     <>
       <header
         className={`fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${
-          scrolled
-            ? 'bg-ivory/95 backdrop-blur-md border-b border-stone-200 py-3'
-            : 'bg-transparent py-6'
-        }`}
+          transparentNav
+            ? 'bg-transparent'
+            : 'bg-ivory/80 backdrop-blur-xl border-b border-stone-200/70 shadow-[0_1px_0_rgba(0,0,0,0.02)]'
+        } ${scrolled ? 'py-3' : 'py-6'}`}
       >
+        {/* Scroll-progress indicator (damped) */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] overflow-hidden">
+          <div
+            ref={barRef}
+            className="h-full w-full origin-left bg-accent/70"
+            style={{ transform: 'scaleX(0)' }}
+          />
+        </div>
         <div className="container-lux flex items-center justify-between">
           {/* Logo */}
           <button
             onClick={() => navigate('/')}
             className={`font-display text-2xl tracking-[0.3em] font-light transition-colors ${
-              scrolled ? 'text-stone-900' : 'text-white'
+              transparentNav ? 'text-white' : 'text-stone-900'
             }`}
           >
             {brand}
@@ -66,13 +88,13 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
                 key={item.key}
                 onClick={() => navigate(item.path)}
                 className={`text-xs tracking-[0.15em] uppercase link-underline transition-colors ${
-                  scrolled
+                  transparentNav
                     ? isActive(item.path)
-                      ? 'text-stone-900 font-medium'
-                      : 'text-stone-600 hover:text-stone-900'
+                      ? 'text-white font-medium'
+                      : 'text-white/80 hover:text-white'
                     : isActive(item.path)
-                    ? 'text-white font-medium'
-                    : 'text-white/80 hover:text-white'
+                    ? 'text-stone-900 font-medium'
+                    : 'text-stone-600 hover:text-stone-900'
                 }`}
               >
                 {t(item.key)}
@@ -84,14 +106,14 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
           <div className="flex items-center gap-4 md:gap-5">
             <button
               onClick={onSearchOpen}
-              className={`transition-colors ${scrolled ? 'text-stone-700 hover:text-stone-900' : 'text-white/90 hover:text-white'}`}
+              className={`transition-colors ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
               aria-label={t('search')}
             >
               <Search size={18} strokeWidth={1.5} />
             </button>
             <button
               onClick={() => navigate('/wishlist')}
-              className={`relative transition-colors ${scrolled ? 'text-stone-700 hover:text-stone-900' : 'text-white/90 hover:text-white'}`}
+              className={`relative transition-colors ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
               aria-label={t('wishlist')}
             >
               <Heart size={18} strokeWidth={1.5} />
@@ -103,13 +125,13 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
             </button>
             <button
               onClick={toggleLang}
-              className={`text-xs tracking-[0.15em] uppercase transition-colors ${scrolled ? 'text-stone-700 hover:text-stone-900' : 'text-white/90 hover:text-white'}`}
+              className={`text-xs tracking-[0.15em] uppercase transition-colors ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
             >
               {lang === 'ar' ? 'EN' : 'AR'}
             </button>
             <button
               onClick={() => setMobileOpen(true)}
-              className={`lg:hidden transition-colors ${scrolled ? 'text-stone-900' : 'text-white'}`}
+              className={`lg:hidden transition-colors ${transparentNav ? 'text-white' : 'text-stone-900'}`}
               aria-label="Menu"
             >
               <Menu size={22} strokeWidth={1.5} />

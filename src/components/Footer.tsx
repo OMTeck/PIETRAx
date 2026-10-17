@@ -41,7 +41,7 @@ export function Footer() {
   ];
 
   return (
-    <footer className="bg-stone-950 text-stone-300 pt-20 pb-8">
+    <footer data-theme-section="dark" className="bg-stone-950 text-stone-300 pt-20 pb-8">
       <div className="container-lux">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-12 mb-16">
           <div className="md:col-span-2">

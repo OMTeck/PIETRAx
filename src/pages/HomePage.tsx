@@ -1,10 +1,12 @@
+import { useRef, type CSSProperties } from 'react';
 import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { useCatalog } from '@/context/CatalogContext';
 import { pubName, pubCover, pubCollectionName, companySettings, type PubMaterial } from '@/lib/public';
 import { colourSwatches, showroomImage, heroImage } from '@/data/content';
-import { Reveal, LazyImage, SectionTitle } from '@/components/ui/Reveal';
+import { Reveal, LazyImage, SectionTitle, TextReveal } from '@/components/ui/Reveal';
+import { useScrollScene, useStickyStack } from '@/lib/motion';
 import { ArrowRight, MapPin, Clock, Phone, Heart } from 'lucide-react';
 
 export function HomePage() {
@@ -17,9 +19,58 @@ export function HomePage() {
   const brand = company.nameEn || 'PIETRA';
   const heroTitle = lang === 'ar' ? company.taglineAr || t('heroTitle') : company.taglineEn || t('heroTitle');
 
+  // Scroll-scrubbed hero: the image zooms out and the copy lifts + fades as the
+  // hero exits, all bound to the damped scroll value.
+  const heroRef = useRef<HTMLElement | null>(null);
+  const heroImgRef = useRef<HTMLImageElement | null>(null);
+  const heroCopyRef = useRef<HTMLDivElement | null>(null);
+  useScrollScene(heroRef, ({ exit }) => {
+    if (heroImgRef.current) {
+      heroImgRef.current.style.transform = `scale(${(1.12 - exit * 0.12).toFixed(4)})`;
+    }
+    if (heroCopyRef.current) {
+      heroCopyRef.current.style.opacity = Math.max(0, 1 - exit * 1.3).toFixed(3);
+      heroCopyRef.current.style.transform = `translate3d(0, ${(exit * 80).toFixed(2)}px, 0)`;
+    }
+  });
+
+  // Sticky-stack chaptered cards (the craft story) — recede enhancement.
+  const stackRef = useRef<HTMLDivElement | null>(null);
+  useStickyStack(stackRef);
+
   const newArrivals = materials.filter((m) => m.newArrival).slice(0, 6);
   const featuredProjects = projects.slice(0, 5);
   const colours = Object.entries(colourSwatches);
+
+  const craftChapters = [
+    {
+      image: showroomImage,
+      eyebrow: lang === 'ar' ? 'الانتقاء' : 'Sourcing',
+      title: lang === 'ar' ? 'كل لوح يُختار يدويًا' : 'Every slab chosen by hand',
+      body:
+        lang === 'ar'
+          ? 'نزور المحاجر ونفحص كل لوح في ضوء اليوم لضمان تناسق العروق واللون قبل أن يصل إلى مجموعتنا.'
+          : 'We visit the quarries and inspect every slab in daylight to guarantee the veining and tone match before it joins our collection.',
+    },
+    {
+      image: 'https://images.pexels.com/photos/6283967/pexels-photo-6283967.jpeg?auto=compress&cs=tinysrgb&w=1200',
+      eyebrow: lang === 'ar' ? 'التشغيل' : 'Fabrication',
+      title: lang === 'ar' ? 'دقة بالملّيمتر' : 'Cut to the millimetre',
+      body:
+        lang === 'ar'
+          ? 'نشكّل الحواف والوصلات في ورشتنا بأدوات دقيقة، مع مطابقة العروق للحصول على تدفّق بصري متصل.'
+          : 'Edges and joints are finished in our workshop to the millimetre, matching veins so the surface reads as one seamless flow.',
+    },
+    {
+      image: 'https://images.pexels.com/photos/8146212/pexels-photo-8146212.jpeg?auto=compress&cs=tinysrgb&w=1200',
+      eyebrow: lang === 'ar' ? 'التركيب' : 'Installation',
+      title: lang === 'ar' ? 'تركيب بمستوى المتاحف' : 'Installed to museum standard',
+      body:
+        lang === 'ar'
+          ? 'فرقنا المدرّبة تتعامل مع كل قطعة كعمل فني، من التثبيت حتى التلميع النهائي وفحص الجودة.'
+          : 'Our trained teams treat every piece like artwork, from fixing through final polishing and quality sign-off.',
+    },
+  ];
 
   const cover = (m: PubMaterial) => pubCover(m) ?? '';
 
@@ -33,24 +84,28 @@ export function HomePage() {
   return (
     <div>
       {/* Hero */}
-      <section className="relative h-screen flex items-center justify-center overflow-hidden">
+      <section
+        ref={heroRef}
+        data-theme-section="dark"
+        className="relative h-screen flex items-center justify-center overflow-hidden"
+      >
         <div className="absolute inset-0">
           <img
+            ref={heroImgRef}
             src={heroImage}
             alt="Luxury marble interior"
-            className="w-full h-full object-cover animate-slow-zoom"
+            className="w-full h-full object-cover will-change-transform"
+            style={{ transform: 'scale(1.12)' }}
           />
-          <div className="absolute inset-0 bg-stone-950/40" />
+          <div className="absolute inset-0 bg-gradient-to-b from-stone-950/50 via-stone-950/30 to-stone-950/70" />
         </div>
-        <div className="relative z-10 text-center px-6">
+        <div ref={heroCopyRef} className="relative z-10 text-center px-6 will-change-[opacity,transform]">
           <Reveal>
             <p className="text-xs tracking-[0.3em] uppercase text-white/70 mb-6">{brand} GALLERY</p>
           </Reveal>
-          <Reveal delay={200}>
-            <h1 className="font-display text-display font-light text-white mb-4 max-w-4xl mx-auto leading-[1.05]">
-              {heroTitle}
-            </h1>
-          </Reveal>
+          <h1 className="font-display text-display font-light text-white mb-4 max-w-4xl mx-auto leading-[1.05]">
+            <TextReveal text={heroTitle} wordDelay={90} startDelay={150} />
+          </h1>
           <Reveal delay={400}>
             <p className="text-white/70 text-lg md:text-xl font-light mb-10 max-w-2xl mx-auto">
               {t('heroSubtitle')}
@@ -68,15 +123,15 @@ export function HomePage() {
           </Reveal>
         </div>
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10">
-          <div className="flex flex-col items-center gap-2 text-white/50">
+          <div className="flex flex-col items-center gap-2 text-white/50 animate-float">
             <span className="text-[10px] tracking-[0.3em] uppercase">{t('scrollDown')}</span>
-            <div className="w-px h-12 bg-white/30 animate-pulse" />
+            <div className="w-px h-12 bg-white/30" />
           </div>
         </div>
       </section>
 
       {/* Featured Collections */}
-      <section className="py-20 md:py-32 bg-ivory">
+      <section data-theme-section="light" className="py-20 md:py-32 bg-ivory">
         <div className="container-lux">
           <SectionTitle title={t('featuredCollections')} />
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
@@ -111,7 +166,7 @@ export function HomePage() {
       </section>
 
       {/* New Arrivals — Editorial Grid */}
-      <section className="py-20 md:py-32 bg-stone-100">
+      <section data-theme-section="light" className="py-20 md:py-32 bg-stone-100">
         <div className="container-lux">
           <SectionTitle title={t('newArrivals')} subtitle={t('newArrivalsSubtitle')} />
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
@@ -156,8 +211,46 @@ export function HomePage() {
         </div>
       </section>
 
+      {/* The Craft — sticky-stacked chaptered cards */}
+      <section data-theme-section="light" className="py-20 md:py-32 bg-ivory">
+        <div className="container-lux">
+          <SectionTitle
+            title={lang === 'ar' ? 'حرفة الحجر' : 'The Craft of Stone'}
+            subtitle={lang === 'ar' ? 'من المحجر إلى مساحتك' : 'From quarry to your space'}
+          />
+          <div ref={stackRef} className="card-stack">
+            {craftChapters.map((chapter, i) => (
+              <article key={i} className="stack-card" style={{ '--i': i } as CSSProperties}>
+                <div className="grid md:grid-cols-2">
+                  <div className="relative order-2 md:order-1 min-h-[42vh] md:min-h-[70vh]">
+                    <img
+                      src={chapter.image}
+                      alt=""
+                      loading="lazy"
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                  </div>
+                  <div className="order-1 md:order-2 flex flex-col justify-center gap-5 p-8 md:p-14 bg-white">
+                    <span className="text-xs tracking-[0.25em] uppercase text-accent">
+                      {chapter.eyebrow}
+                    </span>
+                    <h3 className="font-display text-3xl md:text-4xl font-light text-stone-900 leading-tight">
+                      <TextReveal text={chapter.title} />
+                    </h3>
+                    <p className="text-stone-600 leading-relaxed max-w-md">{chapter.body}</p>
+                    <span className="text-xs tracking-[0.2em] uppercase text-stone-400">
+                      0{i + 1} / 0{craftChapters.length}
+                    </span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* Browse by Colour */}
-      <section className="py-20 md:py-32 bg-ivory">
+      <section data-theme-section="light" className="py-20 md:py-32 bg-ivory">
         <div className="container-lux">
           <SectionTitle title={t('browseByColour')} />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
@@ -185,7 +278,7 @@ export function HomePage() {
       </section>
 
       {/* Visualizer Promotion */}
-      <section className="relative h-[80vh] md:h-screen flex items-center overflow-hidden">
+      <section data-theme-section="dark" className="relative h-[80vh] md:h-screen flex items-center overflow-hidden">
         <div className="absolute inset-0">
           <img
             src="https://images.pexels.com/photos/8146212/pexels-photo-8146212.jpeg?auto=compress&cs=tinysrgb&w=1920"
@@ -207,7 +300,7 @@ export function HomePage() {
       </section>
 
       {/* Projects */}
-      <section className="py-20 md:py-32 bg-stone-100">
+      <section data-theme-section="light" className="py-20 md:py-32 bg-stone-100">
         <div className="container-lux">
           <SectionTitle title={t('projectsTitle')} subtitle={t('projectsSubtitle')} />
           <div className="space-y-6 md:space-y-10">
@@ -248,7 +341,7 @@ export function HomePage() {
       </section>
 
       {/* Showroom */}
-      <section className="py-20 md:py-32 bg-ivory">
+      <section data-theme-section="light" className="py-20 md:py-32 bg-ivory">
         <div className="container-lux">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center">
             <Reveal>

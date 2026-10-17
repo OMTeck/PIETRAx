@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "apple-design-web": {
+      "source": "s1gmamale1/apple-design-skills",
+      "sourceType": "github",
+      "skillPath": "skills/apple-design-web/SKILL.md",
+      "computedHash": "7d9d5db9bf5ba72f1d0df8cdba217a5260daff573bf5e59464b00cd485e6b97e"
+    }
+  }
+}
