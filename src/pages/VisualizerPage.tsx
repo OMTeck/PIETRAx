@@ -3,24 +3,28 @@ import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { useCatalog } from '@/context/CatalogContext';
-import { pubMaterialName, publicApi, type PubVisualizerSurface } from '@/lib/public';
+import { pubMaterialName, type PubVisualizerSurface } from '@/lib/public';
 import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
-  ArrowLeft, ArrowRight, Upload, X, ZoomIn, RotateCcw, Maximize2,
-  Heart, Download, Share2, ChevronLeft, ChevronRight, Check, Loader2,
+  ArrowLeft, Upload, ZoomIn, RotateCcw,
+  Heart, Download, Share2, Check,
 } from 'lucide-react';
 
 import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
-import { compressImage } from '@/lib/visualizer/imagePreprocessor';
-import { tileCss } from '@/lib/visualizer/textureRenderer';
+import {
+  renderSurfaceTexture,
+  loadImage,
+  parseClipPath,
+  paramsFromMaterial,
+  coverCanvas,
+  DEFAULT_TEXTURE_PARAMS,
+  type TextureMapParams,
+} from '@/lib/visualizer/textureMapper';
 import { pointsToClipPath, simplifyPolygon } from '@/lib/visualizer/geometry';
-import { snapshotElement, downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
-import type { RoomLayout, SurfaceKind, Step, VisMaterial, NormalizedPoint } from '@/lib/visualizer/types';
+import { downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
+import type { RoomLayout, Step, VisMaterial, NormalizedPoint } from '@/lib/visualizer/types';
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
-
-const FALLBACK_PROMPT =
-  'Repaint ONLY the {noun} with {material}, keeping the material exact color, tone, pattern, veining, gloss and finish. This is a strict photorealistic MATERIAL REPLACEMENT, not a redesign. STRICT RULES: (1) Do NOT change the shape or geometry of anything: keep the same room, perspective, camera angle, framing and proportions. (2) Do NOT change the color of anything except the {noun}: keep the overall color balance, walls, ceiling, floor, furniture, objects, decor, shadows and lighting exactly as in the original. (3) Do NOT add, remove, move, resize, reshape or restyle any object or surface. (4) Everything outside the {noun} must stay pixel-for-pixel identical. Output one photorealistic image: same scene, same composition, same room colors, material true to reference.';
 
 /** Mirrors the server defaults so the page still works before /config loads. */
 const FALLBACK_SURFACES: PubVisualizerSurface[] = [
@@ -28,11 +32,6 @@ const FALLBACK_SURFACES: PubVisualizerSurface[] = [
   { id: 'wall', nameAr: 'الجدار', nameEn: 'Wall', tileCm: 40, noun: 'wall', polygon: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 0.55 }, { x: 0, y: 0.55 }] },
   { id: 'countertop', nameAr: 'سطح العمل', nameEn: 'Countertop', tileCm: 60, noun: 'countertop and cabinetry', polygon: [{ x: 0, y: 0.4 }, { x: 1, y: 0.4 }, { x: 1, y: 0.6 }, { x: 0, y: 0.6 }] },
 ];
-
-/** Builds the FLUX instruction from the configured template + material/noun. */
-function buildMaterialPrompt(template: string, materialEnName: string, noun: string): string {
-  return template.replace(/\{material\}/g, materialEnName).replace(/\{noun\}/g, noun);
-}
 
 export function VisualizerPage() {
   const { t, lang } = useLang();
@@ -49,7 +48,6 @@ export function VisualizerPage() {
   const allowUpload = features?.allowUpload !== false;
   const allowPresetRooms = features?.allowPresetRooms !== false;
   const allowExport = features?.allowExport !== false;
-  const allowCompare = features?.allowCompare !== false;
   const allowManualAreaEdit = features?.allowManualAreaEdit !== false;
   const behavior = visualizerConfig?.behavior;
   const surfacesConfig = behavior?.surfaces?.length ? behavior.surfaces : FALLBACK_SURFACES;
@@ -58,12 +56,12 @@ export function VisualizerPage() {
     for (const s of surfacesConfig) map[s.id] = s;
     return map;
   }, [surfacesConfig]);
-  const promptTemplate = visualizerConfig?.edit?.promptTemplate || FALLBACK_PROMPT;
   const presetAspect = behavior?.displayAspect ?? 16 / 10;
   const aiAnalysisEnabled = visualizerConfig?.analysis?.enabled !== false;
-  const aiEditEnabled = visualizerConfig?.edit?.enabled !== false;
-  const editMaxInputDim = visualizerConfig?.edit?.maxInputDim ?? 500;
-  const editQuality = visualizerConfig?.edit?.quality ?? 0.85;
+  const renderSettings = visualizerConfig?.render;
+  const strictFidelity = renderSettings?.strictFidelity !== false;
+  const allowLighting = renderSettings?.allowLighting === true;
+  const defaultSampling = renderSettings?.defaultSampling === 'bilinear' ? 'bilinear' : 'nearest';
 
   const visMaterials: VisMaterial[] = useMemo(() => {
     return (visualizer?.materials ?? []).map((vm) => {
@@ -79,6 +77,13 @@ export function VisualizerPage() {
         colourLabel: meta?.color ? (lang === 'ar' ? meta.color.labelAr : meta.color.labelEn) : '',
         finishLabel: meta?.finish ? (lang === 'ar' ? meta.finish.labelAr : meta.finish.labelEn) : '',
         sizeLabel: meta?.sizes[0]?.label ?? '',
+        tileWidth: vm.tileWidth,
+        tileHeight: vm.tileHeight,
+        patternScale: vm.patternScale,
+        rotation: vm.rotation,
+        groutWidth: vm.groutWidth,
+        groutColor: vm.groutColor,
+        bookmatch: vm.bookmatch,
       };
     });
   }, [visualizer, materialBySlug, lang]);
@@ -95,18 +100,12 @@ export function VisualizerPage() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedSurfaceId, setSelectedSurfaceId] = useState<string | null>(null);
   const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
-  const [showCompare, setShowCompare] = useState(false);
-  const [compareMaterialId, setCompareMaterialId] = useState<string | null>(null);
   const [uploadMode, setUploadMode] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-  const [aiEditedImage, setAiEditedImage] = useState<string | null>(null);
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiError, setAiError] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [uploadSurface, setUploadSurface] = useState<string>('floor');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterCategory, setFilterCategory] = useState<string>('All');
-  const [sliderPos, setSliderPos] = useState(50);
   const [zoom, setZoom] = useState(1);
   const [showSaved, setShowSaved] = useState(false);
   const [layout, setLayout] = useState<RoomLayout | null>(null);
@@ -117,11 +116,11 @@ export function VisualizerPage() {
   const resultRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
 
-  /* Surface +' perspective mapping kept close to the helpers for maintainability. */
-  const surfKind = (id: string): SurfaceKind =>
-    id === 'wall' ? 'wall' : id === 'ceiling' ? 'ceiling' : id === 'countertop' ? 'countertop' : 'floor';
-  const surfTileCm = (id: string): number =>
-    surfaceConfigById[id]?.tileCm ?? (id === 'countertop' ? 60 : id === 'ceiling' ? 30 : 40);
+  // Deterministic texture-mapping state (Strict Texture Fidelity by default).
+  const [textureParams, setTextureParams] = useState<TextureMapParams>({ ...DEFAULT_TEXTURE_PARAMS });
+  const [compositeUrl, setCompositeUrl] = useState<string | null>(null);
+  const [renderError, setRenderError] = useState(false);
+  const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
   useEffect(() => {
@@ -186,34 +185,14 @@ export function VisualizerPage() {
   const selectedRoom = rooms.find((r) => r.id === selectedRoomId);
   const selectedSurface = selectedRoom?.surfaces.find((s) => s.id === selectedSurfaceId);
   const selectedMaterial = visMaterials.find((m) => m.id === selectedMaterialId);
-  const compareMaterial = visMaterials.find((m) => m.id === compareMaterialId);
 
-  // The base photo for AI (upload) or the preset room's photo (existing rooms).
+  // The base photo (upload) or the preset room's photo (existing rooms).
   const originalImage = uploadedImage ?? selectedRoom?.previewImage ?? null;
-  const roomImage = (showOriginal && originalImage)
-    ? originalImage
-    : (aiEditedImage || originalImage);
-
-  // When an AI edit exists, the canvas shows that image instead of the CSS
-  // texture overlay (which stays as the instant preview / fallback).
-  const aiResultActive = !!aiEditedImage;
-  const resultSrc = roomImage;
+  const roomImage = originalImage;
 
   // Preset rooms render at the configured box (their clip-paths were authored
-  // for it); uploads keep the photo's own aspect. AI edits match that display box.
+  // for it); uploads keep the photo's own aspect.
   const displayAspect = uploadMode && imageAspect ? imageAspect : presetAspect;
-
-  /** FLUX noun for a surface: configured surfaces by id, presets by their name. */
-  const nounForSurface = (surfaceId: string): string => {
-    const configured = surfaceConfigById[surfaceId];
-    if (configured?.noun) return configured.noun;
-    const name = (selectedRoom?.surfaces.find((s) => s.id === surfaceId)?.nameEn || '').toLowerCase();
-    if (name.includes('floor')) return 'floor';
-    if (name.includes('ceiling')) return 'ceiling';
-    if (name.includes('counter') || name.includes('island') || name.includes('cabinet')) return 'countertop and cabinetry';
-    if (name.includes('wall')) return 'wall';
-    return 'surface';
-  };
 
   /** Maps a detected surfaceType to the active surface id (upload id or preset id). */
   const surfaceIdForType = (type: string): string | null => {
@@ -240,7 +219,6 @@ export function VisualizerPage() {
       const reader = new FileReader();
       reader.onload = (ev) => {
         setUploadedImage(ev.target?.result as string);
-        setAiEditedImage(null);
         setShowOriginal(false);
         setUploadMode(true);
         setSelectedRoomId(null);
@@ -282,44 +260,76 @@ export function VisualizerPage() {
   };
 
   /**
-   * Automatic AI edit: when the user picks a material for an uploaded room,
-   * FLUX.2 klein repaints the chosen surface with that material. The prompt is
-   * derived from the material name + surface type (no manual prompt needed).
-   * The CSS texture overlay stays as an instant preview/fallback.
+   * Deterministic texture mapping: composites the selected material's original
+   * texture onto the selected surface using projective geometry + tiling.
+   * No generative model is involved — source pixels are copied verbatim.
    */
-  const runAutoAiEdit = async (material: VisMaterial, surfaceId: string) => {
+  const renderComposite = async (maxDimension?: number) => {
     const base = uploadedImage ?? selectedRoom?.previewImage ?? null;
-    if (!base || !aiEditEnabled) return;
-    setAiBusy(true);
-    setAiError(false);
-    setAiEditedImage(null);
+    const material = visMaterials.find((m) => m.id === selectedMaterialId);
+    const surfaceId = selectedSurfaceId || (uploadMode ? 'floor' : selectedRoom?.surfaces[0]?.id);
+    if (!base || !material?.textureUrl || !surfaceId) {
+      compositeCanvasRef.current = null;
+      setCompositeUrl(null);
+      return;
+    }
+    const polygon = uploadMode
+      ? polygonFor(surfaceId)
+      : parseClipPath(selectedRoom?.surfaces.find((s) => s.id === surfaceId)?.clipPath || '');
+    if (polygon.length < 3) {
+      compositeCanvasRef.current = null;
+      setCompositeUrl(null);
+      return;
+    }
     try {
-      const compressed = await compressImage(base, {
-        maxDim: editMaxInputDim,
-        quality: editQuality,
-        cropAspect: uploadMode ? undefined : displayAspect,
+      const [room, texture] = await Promise.all([loadImage(base), loadImage(material.textureUrl)]);
+      const aspect = uploadMode && imageAspect ? imageAspect : presetAspect;
+      const box = coverCanvas(room, aspect, maxDimension ?? 1600);
+      const imageW = room.naturalWidth || box.width;
+      const ppmBase = uploadMode && layout
+        ? layout.pxPerMeter
+        : Math.max(80, Math.round(imageW / 4));
+      const canvas = renderSurfaceTexture({
+        roomImage: box,
+        polygon,
+        texture,
+        params: textureParams,
+        pxPerMeter: ppmBase * (box.width / imageW),
       });
-      const materialDesc = [material.enName || material.name, material.colourLabel, material.typeLabel]
-        .filter(Boolean)
-        .join(', ');
-      const res = await publicApi.aiEditRoom({
-        prompt: buildMaterialPrompt(promptTemplate, materialDesc, nounForSurface(surfaceId)),
-        image: compressed.dataUrl,
-        mime: 'image/jpeg',
-      });
-      setAiEditedImage(res.image);
+      compositeCanvasRef.current = canvas;
+      setCompositeUrl(canvas.toDataURL('image/png'));
+      setRenderError(false);
     } catch {
-      setAiError(true);
-    } finally {
-      setAiBusy(false);
+      setRenderError(true);
     }
   };
 
-  /** Pick a surface and move to the material step (resets any previous AI edit). */
+  const renderCompositeRef = useRef(renderComposite);
+  renderCompositeRef.current = renderComposite;
+
+  // Reset mapping defaults whenever a different material is chosen.
+  const materialsRef = useRef(visMaterials);
+  materialsRef.current = visMaterials;
+  useEffect(() => {
+    const material = materialsRef.current.find((m) => m.id === selectedMaterialId);
+    if (material) {
+      setTextureParams({
+        ...paramsFromMaterial(material),
+        sampling: strictFidelity ? 'nearest' : defaultSampling,
+        lighting: false,
+      });
+    }
+  }, [selectedMaterialId, strictFidelity, defaultSampling]);
+
+  // Re-render the composite whenever the inputs change.
+  useEffect(() => {
+    if (step !== 'result') return;
+    void renderCompositeRef.current(1100);
+  }, [step, uploadedImage, selectedRoomId, selectedSurfaceId, selectedMaterialId, textureParams, uploadMode, layout, aiSegments, visMaterials]);
+
+  /** Pick a surface and move to the material step. */
   const selectSurface = (surfaceId: string) => {
     setSelectedSurfaceId(surfaceId);
-    setAiEditedImage(null);
-    setAiError(false);
     setShowOriginal(false);
     setStep('material');
   };
@@ -342,20 +352,33 @@ export function VisualizerPage() {
     : (selectedRoom?.surfaces ?? []).map((s) => ({ id: s.id, clipPath: s.clipPath, nameAr: s.nameAr, nameEn: s.nameEn }));
 
   const handleExport = async (mode: 'download' | 'share') => {
-    if (!resultRef.current || exporting) return;
+    if (exporting) return;
     setExporting(true);
     try {
-      const blob = await snapshotElement(resultRef.current);
-      if (mode === 'download') {
-        downloadBlob(blob, 'pietrax-visualizer.png');
-      } else {
-        await shareBlob(blob, selectedMaterial?.name ?? 'PIETRAx', 'pietrax-visualizer.png');
-      }
-    } catch {
-      // Snapshot failures fall back to opening the image.
-      if (roomImage) {
+      // Re-render at full resolution and export losslessly as PNG.
+      await renderCompositeRef.current(undefined);
+      const canvas = compositeCanvasRef.current;
+      const blob = canvas
+        ? await new Promise<Blob>((resolve, reject) =>
+            canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Encode failed'))), 'image/png'),
+          )
+        : null;
+      if (blob) {
+        if (mode === 'download') {
+          downloadBlob(blob, 'pietrax-visualizer.png');
+        } else {
+          await shareBlob(blob, selectedMaterial?.name ?? 'PIETRAx', 'pietrax-visualizer.png');
+        }
+      } else if (roomImage) {
         const a = document.createElement('a');
         a.href = roomImage;
+        a.download = 'pietrax-visualizer.png';
+        a.click();
+      }
+    } catch {
+      if (compositeUrl) {
+        const a = document.createElement('a');
+        a.href = compositeUrl;
         a.download = 'pietrax-visualizer.png';
         a.click();
       }
@@ -427,8 +450,6 @@ export function VisualizerPage() {
                     setSelectedRoomId(room.id);
                     setUploadMode(false);
                     setUploadedImage(null);
-                    setAiEditedImage(null);
-                    setAiError(false);
                     setShowOriginal(false);
                     setAiSegments({});
                     setEditingSurfaceId(null);
@@ -549,7 +570,7 @@ export function VisualizerPage() {
       {step === 'material' && (
         <div className="container-lux pb-20">
           <div className="flex items-center justify-between mb-6">
-            <button onClick={() => { setStep('surface'); setAiEditedImage(null); setAiError(false); setShowOriginal(false); }} className="flex items-center gap-2 text-xs tracking-[0.15em] uppercase text-stone-500 hover:text-stone-900">
+            <button onClick={() => { setStep('surface'); setShowOriginal(false); }} className="flex items-center gap-2 text-xs tracking-[0.15em] uppercase text-stone-500 hover:text-stone-900">
               <ArrowLeft size={14} strokeWidth={1.5} className="rtl:rotate-180" />
               {t('changeSurface')}
             </button>
@@ -593,9 +614,6 @@ export function VisualizerPage() {
                 onClick={() => {
                   setSelectedMaterialId(m.id);
                   setStep('result');
-                  if (uploadedImage || selectedRoom?.previewImage) {
-                    void runAutoAiEdit(m, selectedSurfaceId || surfaces[0]?.id || 'floor');
-                  }
                 }}
                 className={`group relative overflow-hidden border-2 transition-all ${
                   selectedMaterialId === m.id ? 'border-stone-900' : 'border-transparent hover:border-stone-300'
@@ -623,18 +641,12 @@ export function VisualizerPage() {
               <button onClick={() => setZoom(zoom === 1 ? 1.5 : 1)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                 <ZoomIn size={13} strokeWidth={1.5} /> {t('reset')}
               </button>
-              <button onClick={() => { setStep('room'); setUploadedImage(null); setUploadMode(false); setSelectedMaterialId(null); setAiEditedImage(null); setAiError(false); setShowOriginal(false); }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
+              <button onClick={() => { setStep('room'); setUploadedImage(null); setUploadMode(false); setSelectedMaterialId(null); setShowOriginal(false); setCompositeUrl(null); }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                 <RotateCcw size={13} strokeWidth={1.5} /> {t('reset')}
               </button>
-              {aiResultActive ? (
-                <button onClick={() => setShowOriginal((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
-                  {showOriginal ? t('aiEditResult') : t('originalImage')}
-                </button>
-              ) : allowCompare && (
-                <button onClick={() => setShowCompare(!showCompare)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
-                  {t('compare')}
-                </button>
-              )}
+              <button onClick={() => setShowOriginal((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
+                {showOriginal ? t('aiEditResult') : t('originalImage')}
+              </button>
             </div>
           </div>
 
@@ -644,118 +656,94 @@ export function VisualizerPage() {
             className="relative aspect-[16/10] overflow-hidden bg-stone-200"
             style={uploadMode && imageAspect ? { transform: `scale(${zoom})`, transformOrigin: 'center', aspectRatio: `${imageAspect}` } : { transform: `scale(${zoom})`, transformOrigin: 'center' }}
           >
-            <img src={resultSrc ?? undefined} alt="Room" className="absolute inset-0 w-full h-full object-cover" />
-
-            {/* Applied Material (CSS preview) — hidden when the AI result is shown */}
-            {!aiResultActive && (
-            <div
-              className="absolute inset-0 transition-all duration-500"
-              style={{ clipPath: applySurfaceClip(selectedSurfaceId || 'floor') }}
-            >
-              {uploadMode && layout ? (
-                <div
-                  className="absolute inset-0"
-                  style={tileCss({
-                    textureUrl: selectedMaterial.textureUrl,
-                    tileCm: surfTileCm(selectedSurfaceId || 'floor'),
-                    pxPerMeter: layout.pxPerMeter,
-                    kind: surfKind(selectedSurfaceId || 'floor'),
-                    horizonY: layout.horizonY,
-                  })}
-                />
-              ) : (
-                <div
-                  className="absolute inset-0"
-                  style={{
-                    backgroundImage: `url(${selectedMaterial.textureUrl})`,
-                    backgroundSize: showCompare && sliderPos < 50 ? '0% 0%' : 'cover',
-                    backgroundPosition: 'center',
-                    mixBlendMode: 'multiply',
-                    opacity: 0.85,
-                  }}
-                />
+            <img
+              src={showOriginal ? (roomImage ?? undefined) : (compositeUrl ?? roomImage ?? undefined)}
+              alt="Room"
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+            {/* Labels */}
+            <div className="absolute bottom-4 left-4 flex gap-2">
+              <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">
+                {lang === 'ar' ? selectedSurface?.nameAr || selectedSurfaceId : selectedSurface?.nameEn || selectedSurfaceId}
+              </span>
+              {!showOriginal && compositeUrl && (
+                <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">Strict</span>
+              )}
+              {showOriginal && (
+                <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">{t('originalImage')}</span>
               )}
             </div>
-            )}
-            {!aiResultActive && showCompare && (
-              <>
-                <div
-                  className="absolute inset-0"
-                  style={{
-                    clipPath: `polygon(0 0, ${sliderPos}% 0, ${sliderPos}% 100%, 0 100%)`,
-                    backgroundImage: `url(${compareMaterial?.textureUrl || selectedMaterial.textureUrl})`,
-                    backgroundSize: 'cover',
-                    backgroundPosition: 'center',
-                    mixBlendMode: 'multiply',
-                    opacity: 0.85,
-                  }}
-                />
-                <div
-                  className="absolute top-0 bottom-0 w-px bg-white shadow-lg cursor-ew-resize"
-                  style={{ left: `${sliderPos}%` }}
-                >
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full shadow-lg flex items-center justify-center">
-                    <ChevronLeft size={14} strokeWidth={2} className="text-stone-900" />
-                    <ChevronRight size={14} strokeWidth={2} className="text-stone-900" />
-                  </div>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={sliderPos}
-                  onChange={(e) => setSliderPos(Number(e.target.value))}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize"
-                />
-                <span className="absolute top-4 left-4 text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">{t('before')}</span>
-                <span className="absolute top-4 right-4 text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">{t('after')}</span>
-              </>
-            )}
-
-            {/* AI processing overlay */}
-            {aiBusy && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-stone-950/40">
-                <div className="flex items-center gap-3 bg-white px-5 py-3 shadow-lg">
-                  <Loader2 size={16} strokeWidth={1.5} className="animate-spin text-stone-900" />
-                  <span className="text-xs tracking-wider uppercase text-stone-700">{t('aiEditing')}</span>
-                </div>
-              </div>
-            )}
-
-            {/* Labels */}
-            {!showCompare && (
-              <div className="absolute bottom-4 left-4 flex gap-2">
-                <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">
-                  {lang === 'ar' ? selectedSurface?.nameAr || selectedSurfaceId : selectedSurface?.nameEn || selectedSurfaceId}
-                </span>
-                {aiResultActive && !showOriginal && (
-                  <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">{t('aiEditResult')}</span>
-                )}
-                {aiResultActive && showOriginal && (
-                  <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">{t('originalImage')}</span>
-                )}
-              </div>
-            )}
           </div>
 
-          {aiError && (
-            <p className="mt-3 text-xs text-red-700">{t('aiEditFailed')}</p>
-          )}
+          {renderError && <p className="mt-3 text-xs text-red-700">Could not render the texture.</p>}
 
-          {/* Compare Material Selector */}
-          {allowCompare && showCompare && (
-            <div className="mt-4">
-              <p className="text-xs tracking-[0.15em] uppercase text-stone-500 mb-3">{t('compare')} A / B</p>
-              <div className="flex gap-3 overflow-x-auto scrollbar-hide">
-                {visMaterials.slice(0, 10).map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setCompareMaterialId(m.id)}
-                    className={`shrink-0 w-16 h-16 overflow-hidden border-2 ${compareMaterialId === m.id ? 'border-stone-900' : 'border-transparent'}`}
-                  >
-                    <img src={m.textureUrl} alt={m.name} className="w-full h-full object-cover" />
-                  </button>
+          {/* Deterministic texture-mapping controls */}
+          {selectedMaterial && (
+            <div className="mt-6 border border-stone-200 bg-ivory p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-stone-800">Texture mapping</h3>
+                <span className="text-[11px] uppercase tracking-wider text-stone-500">
+                  {strictFidelity ? 'Strict fidelity' : 'Standard'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                {([
+                  ['tileWidthCm', 'Tile width (cm)'],
+                  ['tileHeightCm', 'Tile height (cm)'],
+                  ['patternScale', 'Pattern scale'],
+                  ['rotationDeg', 'Rotation (deg)'],
+                  ['repeatX', 'Repeat X (0=auto)'],
+                  ['repeatY', 'Repeat Y (0=auto)'],
+                  ['groutWidthCm', 'Grout width (cm)'],
+                  ['offsetX', 'Offset X (tiles)'],
+                  ['offsetY', 'Offset Y (tiles)'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="block text-xs text-stone-600">
+                    <span className="mb-1 block">{label}</span>
+                    <input
+                      type="number"
+                      className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                      value={String(textureParams[key])}
+                      onChange={(e) => setTextureParams({ ...textureParams, [key]: Number(e.target.value) } as TextureMapParams)}
+                    />
+                  </label>
                 ))}
+                <label className="block text-xs text-stone-600">
+                  <span className="mb-1 block">Grout color</span>
+                  <input
+                    type="color"
+                    className="h-9 w-full border border-stone-300"
+                    value={textureParams.groutColor}
+                    onChange={(e) => setTextureParams({ ...textureParams, groutColor: e.target.value })}
+                  />
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-stone-700">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={textureParams.flipX} onChange={(e) => setTextureParams({ ...textureParams, flipX: e.target.checked })} />
+                  Flip horizontal
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={textureParams.flipY} onChange={(e) => setTextureParams({ ...textureParams, flipY: e.target.checked })} />
+                  Flip vertical
+                </label>
+                <label className="flex items-center gap-2">
+                  Sampling
+                  <select
+                    className="border border-stone-300 px-2 py-1"
+                    value={textureParams.sampling}
+                    onChange={(e) => setTextureParams({ ...textureParams, sampling: e.target.value as 'nearest' | 'bilinear' })}
+                  >
+                    <option value="nearest">Nearest (exact)</option>
+                    <option value="bilinear">Bilinear</option>
+                  </select>
+                </label>
+                {allowLighting && (
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={textureParams.lighting} onChange={(e) => setTextureParams({ ...textureParams, lighting: e.target.checked })} />
+                    Environmental lighting
+                  </label>
+                )}
               </div>
             </div>
           )}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Sparkles, Wand2, SlidersHorizontal, ShieldCheck, Plus, Trash2, Cpu, PlugZap } from 'lucide-react';
+import { Save, Sparkles, Wand2, SlidersHorizontal, ShieldCheck, Plus, Trash2, Cpu, PlugZap, Layers } from 'lucide-react';
 import { visualizerApi } from '@/admin/server';
 import { useAsync } from '@/admin/lib';
 import { Button, Input, Field, Toggle, Textarea, Select, Card, Loading, useToast, cx } from '@/admin/ui';
@@ -65,6 +65,7 @@ export function VisualizerSettingsPanel() {
   const setBehavior = (patch: Partial<VisualizerSettings['behavior']>) => setS({ ...s, behavior: { ...s.behavior, ...patch } });
   const setSurfaces = (surfaces: VisualizerSurfaceSetting[]) => setBehavior({ surfaces });
   const setVision = (patch: Partial<VisualizerSettings['vision']>) => setS({ ...s, vision: { ...s.vision, ...patch } });
+  const setRender = (patch: Partial<VisualizerSettings['render']>) => setS({ ...s, render: { ...s.render, ...patch } });
   const pm = (t: VisionProviderType) => metaTypes.find((m) => m.type === t);
   const setProviders = (providers: VisionProvider[]) => setVision({ providers });
   const updateProvider = (idx: number, patch: Partial<VisionProvider>) =>
@@ -335,6 +336,28 @@ export function VisualizerSettingsPanel() {
               <Textarea rows={3} value={s.edit.promptTemplate} onChange={(e) => setEdit({ promptTemplate: e.target.value })} />
             </Field>
           </div>
+        </div>
+      </Card>
+
+      {/* Texture rendering */}
+      <Card
+        title={<span className="flex items-center gap-2"><Layers className="h-4 w-4 text-stone-500" /> Texture rendering</span>}
+        actions={<Toggle checked={s.render.strictFidelity} onChange={(v) => setRender({ strictFidelity: v })} label="Strict Texture Fidelity" />}
+      >
+        <p className="mb-4 text-xs text-stone-500">
+          Strict mode maps the original material pixels directly onto the selected surface with no
+          generative regeneration, recolouring, relighting or blending. It is on by default.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="flex items-end pb-1">
+            <Toggle checked={s.render.allowLighting} onChange={(v) => setRender({ allowLighting: v })} label="Allow optional environmental lighting" />
+          </div>
+          <Field label="Default sampling" hint="Nearest keeps source RGB values exact.">
+            <Select value={s.render.defaultSampling} onChange={(e) => setRender({ defaultSampling: e.target.value as 'nearest' | 'bilinear' })}>
+              <option value="nearest">Nearest (exact)</option>
+              <option value="bilinear">Bilinear</option>
+            </Select>
+          </Field>
         </div>
       </Card>
 

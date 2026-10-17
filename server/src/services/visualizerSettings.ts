@@ -121,6 +121,13 @@ export const visualizerSettingsSchema = z.object({
       providers: z.array(visionProviderSchema).max(12).default([]),
     })
     .default({}),
+  render: z
+    .object({
+      strictFidelity: z.boolean().default(true),
+      allowLighting: z.boolean().default(false),
+      defaultSampling: z.enum(['nearest', 'bilinear']).default('nearest'),
+    })
+    .default({}),
 });
 
 export type VisualizerSettings = z.infer<typeof visualizerSettingsSchema>;
@@ -131,6 +138,7 @@ export interface PublicVisualizerConfig {
   features: VisualizerSettings['features'];
   analysis: { enabled: boolean; autoApply: boolean };
   edit: { enabled: boolean; maxInputDim: number; quality: number; promptTemplate: string };
+  render: { strictFidelity: boolean; allowLighting: boolean; defaultSampling: 'nearest' | 'bilinear' };
   behavior: VisualizerSettings['behavior'];
 }
 
@@ -223,6 +231,11 @@ function buildDefaults(): VisualizerSettings {
       defaultProviderId: '',
       promptTemplate: DEFAULT_VISION_PROMPT,
       providers: [],
+    },
+    render: {
+      strictFidelity: true,
+      allowLighting: false,
+      defaultSampling: 'nearest',
     },
   };
 }
@@ -352,6 +365,11 @@ export async function getPublicVisualizerConfig(): Promise<PublicVisualizerConfi
       maxInputDim: s.edit.maxInputDim,
       quality: s.edit.quality,
       promptTemplate: s.edit.promptTemplate,
+    },
+    render: {
+      strictFidelity: s.render.strictFidelity,
+      allowLighting: s.render.allowLighting,
+      defaultSampling: s.render.defaultSampling,
     },
     behavior: s.behavior,
   };

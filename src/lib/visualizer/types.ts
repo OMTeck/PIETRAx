@@ -44,4 +44,12 @@ export interface VisMaterial {
   colourLabel: string;
   finishLabel: string;
   sizeLabel: string;
+  /** Deterministic texture-mapping defaults stored per material. */
+  tileWidth?: number | null;
+  tileHeight?: number | null;
+  patternScale?: number | null;
+  rotation?: number | null;
+  groutWidth?: number | null;
+  groutColor?: string | null;
+  bookmatch?: boolean;
 }

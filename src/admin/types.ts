@@ -407,6 +407,11 @@ export interface VisualizerSettings {
     promptTemplate: string;
     providers: VisionProvider[];
   };
+  render: {
+    strictFidelity: boolean;
+    allowLighting: boolean;
+    defaultSampling: 'nearest' | 'bilinear';
+  };
 }
 
 // ---- Customers -----------------------------------------------------------
