@@ -7,7 +7,7 @@ import { pubMaterialName, type PubVisualizerSurface } from '@/lib/public';
 import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
   ArrowLeft, Upload, ZoomIn, RotateCcw,
-  Heart, Download, Share2, Check,
+  Heart, Download, Share2, Check, Camera, X,
 } from 'lucide-react';
 
 import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
@@ -115,6 +115,13 @@ export function VisualizerPage() {
   const resultRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
 
+  // Camera capture.
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState(false);
+  const [cameraBusy, setCameraBusy] = useState(false);
+
   // Deterministic texture-mapping state (Strict Texture Fidelity by default).
   const [textureParams, setTextureParams] = useState<TextureMapParams>({ ...DEFAULT_TEXTURE_PARAMS });
   const [compositeUrl, setCompositeUrl] = useState<string | null>(null);
@@ -194,21 +201,80 @@ export function VisualizerPage() {
     return match?.id ?? null;
   };
 
+  /** Applies a room photo (from file or camera) and advances to surface selection. */
+  const applyRoomImage = (dataUrl: string) => {
+    setUploadedImage(dataUrl);
+    setShowOriginal(false);
+    setUploadMode(true);
+    setSelectedRoomId(null);
+    setSelectedSurfaceId(null);
+    setStep('surface');
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = (ev) => {
-        setUploadedImage(ev.target?.result as string);
-        setShowOriginal(false);
-        setUploadMode(true);
-        setSelectedRoomId(null);
-        setSelectedSurfaceId(null);
-        setStep('surface');
-      };
+      reader.onload = (ev) => applyRoomImage(ev.target?.result as string);
       reader.readAsDataURL(file);
     }
   };
+
+  const stopCameraStream = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  };
+
+  const closeCamera = () => {
+    stopCameraStream();
+    setCameraOpen(false);
+    setCameraBusy(false);
+    setCameraError(false);
+  };
+
+  const openCamera = async () => {
+    setCameraError(false);
+    setCameraBusy(true);
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('unsupported');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      setCameraOpen(true);
+    } catch {
+      setCameraError(true);
+      setCameraOpen(true);
+    } finally {
+      setCameraBusy(false);
+    }
+  };
+
+  const capturePhoto = () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    closeCamera();
+    applyRoomImage(dataUrl);
+  };
+
+  // Attach the live stream once the preview element is mounted.
+  useEffect(() => {
+    if (!cameraOpen || !videoRef.current) return;
+    if (streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(() => undefined);
+    }
+    return () => undefined;
+  }, [cameraOpen]);
 
   const defaultUploadPolygon: Record<string, NormalizedPoint[]> = Object.fromEntries(
     surfacesConfig.map((s) => [s.id, s.polygon]),
@@ -423,14 +489,25 @@ export function VisualizerPage() {
           {/* Upload Option */}
           {allowUpload && (
           <Reveal>
-            <button
-              onClick={() => fileRef.current?.click()}
-              className="w-full mb-8 border-2 border-dashed border-stone-300 hover:border-stone-900 transition-colors p-8 md:p-12 flex flex-col items-center gap-3 text-stone-600 hover:text-stone-900"
-            >
-              <Upload size={28} strokeWidth={1.5} />
-              <p className="font-display text-xl font-light">{t('uploadYourRoom')}</p>
-              <p className="text-sm text-stone-500">{t('uploadRoomDesc')}</p>
-            </button>
+            <div className="grid md:grid-cols-2 gap-4 mb-8">
+              <button
+                onClick={() => fileRef.current?.click()}
+                className="w-full border-2 border-dashed border-stone-300 hover:border-stone-900 transition-colors p-8 md:p-12 flex flex-col items-center gap-3 text-stone-600 hover:text-stone-900"
+              >
+                <Upload size={28} strokeWidth={1.5} />
+                <p className="font-display text-xl font-light">{t('uploadYourRoom')}</p>
+                <p className="text-sm text-stone-500">{t('uploadRoomDesc')}</p>
+              </button>
+              <button
+                onClick={openCamera}
+                disabled={cameraBusy}
+                className="w-full border-2 border-dashed border-stone-300 hover:border-stone-900 transition-colors p-8 md:p-12 flex flex-col items-center gap-3 text-stone-600 hover:text-stone-900 disabled:opacity-60"
+              >
+                <Camera size={28} strokeWidth={1.5} />
+                <p className="font-display text-xl font-light">{t('captureFromCamera')}</p>
+                <p className="text-sm text-stone-500">{t('cameraHint')}</p>
+              </button>
+            </div>
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
           </Reveal>
           )}
@@ -799,6 +876,37 @@ export function VisualizerPage() {
               {t('saveDesign')}
             </div>
           )}
+        </div>
+      )}
+
+      {cameraOpen && (
+        <div className="fixed inset-0 z-[100] bg-stone-950/90 flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl bg-white">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200">
+              <span className="text-xs tracking-[0.2em] uppercase text-stone-600">{t('captureFromCamera')}</span>
+              <button onClick={closeCamera} className="text-stone-500 hover:text-stone-900" aria-label={t('cancel')}>
+                <X size={20} strokeWidth={1.5} />
+              </button>
+            </div>
+            <div className="relative bg-stone-950 aspect-[4/3] flex items-center justify-center overflow-hidden">
+              {cameraError ? (
+                <p className="text-stone-300 text-sm px-6 text-center">{t('cameraError')}</p>
+              ) : (
+                <video ref={videoRef} playsInline muted autoPlay className="w-full h-full object-contain" />
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-3 px-5 py-4">
+              <button onClick={closeCamera} className="px-5 py-2 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900">
+                {cameraError ? t('close') : t('cancel')}
+              </button>
+              {!cameraError && (
+                <button onClick={capturePhoto} className="px-6 py-2 bg-stone-900 text-ivory text-xs tracking-wider uppercase hover:bg-stone-700 flex items-center gap-2">
+                  <Camera size={14} strokeWidth={1.5} />
+                  {t('capturePhoto')}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
