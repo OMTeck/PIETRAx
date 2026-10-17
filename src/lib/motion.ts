@@ -217,28 +217,24 @@ export function useHeaderOverDark(resetKey?: string): boolean {
   const [overDark, setOverDark] = useState(false);
   useEffect(() => {
     let raf = 0;
-    const compute = () => {
-      raf = 0;
+    let last: boolean | null = null;
+    const tick = () => {
       const y = 32; // inside the header for both its scrolled and unscrolled padding
       let dark = false;
       for (const s of document.querySelectorAll<HTMLElement>('[data-theme-section]')) {
         const r = s.getBoundingClientRect();
-        if (r.top <= y && r.bottom > y) {
-          dark = s.dataset.themeSection === 'dark';
-        }
+        if (r.top <= y && r.bottom > y) dark = s.dataset.themeSection === 'dark';
       }
-      setOverDark(dark);
+      if (dark !== last) {
+        last = dark;
+        setOverDark(dark);
+      }
+      raf = requestAnimationFrame(tick);
     };
-    const schedule = () => {
-      if (!raf) raf = requestAnimationFrame(compute);
-    };
-    compute();
-    window.addEventListener('scroll', schedule, { passive: true });
-    window.addEventListener('resize', schedule);
+    raf = requestAnimationFrame(tick);
     return () => {
-      window.removeEventListener('scroll', schedule);
-      window.removeEventListener('resize', schedule);
-      if (raf) cancelAnimationFrame(raf);
+      cancelAnimationFrame(raf);
+      last = null;
     };
   }, [resetKey]);
   return overDark;
