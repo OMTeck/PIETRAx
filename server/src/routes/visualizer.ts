@@ -63,7 +63,7 @@ visualizerRouter.post(
 );
 
 const aiEditSchema = z.object({
-  prompt: z.string().min(1).max(1000),
+  prompt: z.string().min(1).max(4000), // admin prompt templates + framing can be long
   image: z.string().max(MAX_IMAGE_BYTES * 2), // data URL base64 (~1.33x)
   mime: z.string().max(64).default('image/jpeg'),
   reference: z.string().max(MAX_IMAGE_BYTES * 2).optional(), // e.g. the exact material texture
