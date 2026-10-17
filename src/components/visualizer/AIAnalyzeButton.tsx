@@ -23,7 +23,7 @@ export function AIAnalyzeButton({ uploadedImage, disabled, cropAspect, onSegment
     setError(false);
     onBusyChange?.(true);
     try {
-      const res = await requestRoomSegments(uploadedImage, cropAspect);
+      const res = await requestRoomSegments(uploadedImage, cropAspect, { force: true });
       onSegments({ segments: res.segments, width: res.width, height: res.height });
     } catch {
       setError(true);
