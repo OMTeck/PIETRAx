@@ -22,6 +22,7 @@ import {
   type InstallPattern,
 } from '@/lib/visualizer/textureMapper';
 import { pointsToClipPath, simplifyPolygon } from '@/lib/visualizer/geometry';
+import { requestRoomSegments } from '@/lib/visualizer/segmentClient';
 import { downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
 import type { RoomLayout, Step, VisMaterial, NormalizedPoint, SurfaceKind } from '@/lib/visualizer/types';
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
@@ -59,6 +60,7 @@ export function VisualizerPage() {
   }, [surfacesConfig]);
   const presetAspect = behavior?.displayAspect ?? 16 / 10;
   const aiAnalysisEnabled = visualizerConfig?.analysis?.enabled !== false;
+  const aiAutoApply = visualizerConfig?.analysis?.autoApply !== false;
   const renderSettings = visualizerConfig?.render;
   const installMode: 'realistic' | 'strict' = renderSettings?.mode === 'strict' ? 'strict' : 'realistic';
   const serverShadow = typeof renderSettings?.shadowStrength === 'number' ? renderSettings.shadowStrength : 0.4;
@@ -112,6 +114,9 @@ export function VisualizerPage() {
   const [aiSegments, setAiSegments] = useState<Partial<Record<string, NormalizedPoint[]>>>({});
   const [editingSurfaceId, setEditingSurfaceId] = useState<string | null>(null);
   const [imageAspect, setImageAspect] = useState<number | null>(null);
+  const [autoAnalyzing, setAutoAnalyzing] = useState(false);
+  const [aiError, setAiError] = useState(false);
+  const analyzedRef = useRef<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -145,7 +150,7 @@ export function VisualizerPage() {
       setImageAspect(img.naturalWidth > 0 ? img.naturalWidth / img.naturalHeight : 16 / 10);
     };
     img.src = uploadedImage;
-    return () => { setLayout(null); setAiSegments({}); setEditingSurfaceId(null); setImageAspect(null); };
+    return () => { setLayout(null); setAiSegments({}); setEditingSurfaceId(null); setImageAspect(null); analyzedRef.current = null; };
   }, [uploadedImage, uploadMode]);
 
   useEffect(() => {
@@ -211,6 +216,7 @@ export function VisualizerPage() {
 
   /** Applies a room photo (from file or camera) and advances to surface selection. */
   const applyRoomImage = (dataUrl: string) => {
+    analyzedRef.current = null;
     setUploadedImage(dataUrl);
     setShowOriginal(false);
     setUploadMode(true);
@@ -354,14 +360,45 @@ export function VisualizerPage() {
       const surfaceId = surfaceIdForType(seg.surfaceType);
       if (surfaceId && seg.points.length >= 3) {
         const pts = seg.points.map((p) => ({
-          x: p.x / result.width,
-          y: p.y / result.height,
+          x: Math.max(0, Math.min(1, p.x / result.width)),
+          y: Math.max(0, Math.min(1, p.y / result.height)),
         }));
-        mapped[surfaceId] = simplifyPolygon(pts, behavior?.simplifyTolerance ?? 0.02, behavior?.simplifyMinPoints ?? 30);
+        // Keep the mask precise: only a very fine simplification so the
+        // material hugs the surfacedetected by the model.
+        const eps = Math.min(behavior?.simplifyTolerance ?? 0.02, 0.004);
+        const maxPts = Math.max(behavior?.simplifyMinPoints ?? 30, 120);
+        mapped[surfaceId] = simplifyPolygon(pts, eps, maxPts);
       }
     }
     setAiSegments((prev) => ({ ...prev, ...mapped }));
   };
+  const handleAISegmentsRef = useRef(handleAISegments);
+  handleAISegmentsRef.current = handleAISegments;
+
+  /**
+   * Auto-segment the room photo as soon as the surface step opens, so the
+   * material is placed on the model-detected surface mask instead of a crude
+   * default region. Runs once per distinct photo; the manual button re-runs it.
+   */
+  useEffect(() => {
+    if (step !== 'surface' || !roomImage || !aiAnalysisEnabled || !aiAutoApply) return;
+    if (analyzedRef.current === roomImage) return;
+    analyzedRef.current = roomImage;
+    let cancelled = false;
+    setAutoAnalyzing(true);
+    setAiError(false);
+    (async () => {
+      try {
+        const res = await requestRoomSegments(roomImage, uploadMode ? undefined : displayAspect);
+        if (!cancelled) handleAISegmentsRef.current(res);
+      } catch {
+        if (!cancelled) setAiError(true);
+      } finally {
+        if (!cancelled) setAutoAnalyzing(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [step, roomImage, aiAnalysisEnabled, aiAutoApply, uploadMode, displayAspect]);
 
   /**
    * Deterministic texture mapping: composites the selected material's original
@@ -377,9 +414,12 @@ export function VisualizerPage() {
       setCompositeUrl(null);
       return;
     }
-    const polygon = uploadMode
-      ? polygonFor(surfaceId)
-      : parseClipPath(selectedRoom?.surfaces.find((s) => s.id === surfaceId)?.clipPath || '');
+    const aiPoly = aiSegments[surfaceId];
+    const polygon = aiPoly && aiPoly.length >= 3
+      ? aiPoly
+      : uploadMode
+        ? polygonFor(surfaceId)
+        : parseClipPath(selectedRoom?.surfaces.find((s) => s.id === surfaceId)?.clipPath || '');
     if (polygon.length < 3) {
       compositeCanvasRef.current = null;
       setCompositeUrl(null);
@@ -588,6 +628,7 @@ export function VisualizerPage() {
                     setUploadedImage(null);
                     setShowOriginal(false);
                     setAiSegments({});
+                    analyzedRef.current = null;
                     setEditingSurfaceId(null);
                     setStep('surface');
                   }}
@@ -631,6 +672,7 @@ export function VisualizerPage() {
               <AIAnalyzeButton
                 uploadedImage={roomImage}
                 cropAspect={uploadMode ? undefined : displayAspect}
+                disabled={autoAnalyzing}
                 onSegments={handleAISegments}
               />
             )}
@@ -643,7 +685,16 @@ export function VisualizerPage() {
               </button>
             )}
           </div>
-          <p className="text-xs text-stone-500 mb-6">{t('aiAutoHint')}</p>
+          {autoAnalyzing ? (
+            <p className="flex items-center gap-2 text-xs text-stone-500 mb-6">
+              <span className="inline-block h-3 w-3 rounded-full border-2 border-stone-300 border-t-stone-700 animate-spin" />
+              {t('analyzingImg')}
+            </p>
+          ) : aiError ? (
+            <p className="text-xs text-red-700 mb-6">{t('aiFailed')}</p>
+          ) : (
+            <p className="text-xs text-stone-500 mb-6">{t('aiAutoHint')}</p>
+          )}
 
           {editingSurfaceId && uploadMode ? (
             <div className="mb-6 border border-stone-300 bg-stone-100 p-3">

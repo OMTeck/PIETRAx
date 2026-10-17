@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Sparkles, Loader2 } from 'lucide-react';
 import { useLang } from '@/context/LanguageContext';
-import { publicApi, type PubAISegment } from '@/lib/public';
-import { compressImage } from '@/lib/visualizer/imagePreprocessor';
+import type { PubAISegment } from '@/lib/public';
+import { requestRoomSegments } from '@/lib/visualizer/segmentClient';
 
 interface AIAnalyzeButtonProps {
   uploadedImage: string; // data URL (upload) or remote URL (preset room)
@@ -23,8 +23,7 @@ export function AIAnalyzeButton({ uploadedImage, disabled, cropAspect, onSegment
     setError(false);
     onBusyChange?.(true);
     try {
-      const compressed = await compressImage(uploadedImage, cropAspect ? { cropAspect } : undefined);
-      const res = await publicApi.segmentRoom({ image: compressed.dataUrl, mime: 'image/jpeg' });
+      const res = await requestRoomSegments(uploadedImage, cropAspect);
       onSegments({ segments: res.segments, width: res.width, height: res.height });
     } catch {
       setError(true);

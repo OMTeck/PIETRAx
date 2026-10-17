@@ -23,14 +23,33 @@ export const DEFAULT_PROMPT_TEMPLATE =
  *  for surfaces. Editable from the admin so it applies to whichever provider
  *  is selected. Must return JSON in the documented shape. */
 export const DEFAULT_VISION_PROMPT = [
-  'You are analyzing an interior room photo for a surface-placement tool.',
-  'Identify the major planar surfaces and respond with ONLY JSON, no prose:',
+  'You are a precise surface-segmentation model for an interior-design stone installer.',
+  'Given ONE interior photo, outline the large flat surfaces where stone or tile would be installed.',
+  'Respond with ONLY JSON (no prose, no code fences):',
   '{"surfaces":[{"type":"FLOOR|WALL|CEILING|COUNTERTOP","confidence":0.0,"points":[{"x":0.0,"y":0.0}]}]}',
-  'Rules:',
-  '- "points" are normalized coordinates in 0..1 relative to the image (x from left, y from top) forming a closed polygon for that surface region.',
-  '- Return at most 4 surfaces. Use only the listed types.',
-  '- Omit any surface you cannot locate with confidence.',
+  'Tracing rules:',
+  '- "points" are normalized coordinates in 0..1 (x from the left, y from the top), listed in order around the region boundary.',
+  '- Trace each surface TIGHTLY along its true visible edges: where it meets other surfaces, the horizon/perspective line, and any furniture or objects occluding it. Follow perspective foreshortening.',
+  '- Provide 8 to 24 vertices per surface. Concave shapes and occlusions are allowed; never force a rectangle.',
+  '- FLOOR: follow the visible floor edge where it meets each wall, cabinet or furniture. WALL: trace the wall plane, excluding windows, doors and objects in front. COUNTERTOP: only the top working surface.',
+  '- Return at most 4 surfaces ordered by confidence (highest first). Use only the listed types.',
+  '- Omit any surface you cannot locate confidently. Every polygon must have at least 3 points.',
 ].join('\n');
+
+/** Earlier shipped defaults. When the stored prompt still equals one of these,
+ *  we transparently upgrade it to DEFAULT_VISION_PROMPT so improved segmentation
+ *  reaches existing deployments without the admin re-saving. */
+const LEGACY_VISION_PROMPTS = new Set<string>([
+  [
+    'You are analyzing an interior room photo for a surface-placement tool.',
+    'Identify the major planar surfaces and respond with ONLY JSON, no prose:',
+    '{"surfaces":[{"type":"FLOOR|WALL|CEILING|COUNTERTOP","confidence":0.0,"points":[{"x":0.0,"y":0.0}]}]}',
+    'Rules:',
+    '- "points" are normalized coordinates in 0..1 relative to the image (x from left, y from top) forming a closed polygon for that surface region.',
+    '- Return at most 4 surfaces. Use only the listed types.',
+    '- Omit any surface you cannot locate with confidence.',
+  ].join('\n'),
+]);
 
 const normalizedPointSchema = z.object({
   x: z.number().min(-0.05).max(1.05),
@@ -282,6 +301,9 @@ function normalize(raw: unknown): VisualizerSettings {
   const value = (parsed.success ? parsed.data : buildDefaults()) as VisualizerSettings;
   if (value.behavior.surfaces.length === 0) {
     value.behavior.surfaces = DEFAULT_SURFACES.map((s) => ({ ...s, polygon: s.polygon.map((p) => ({ ...p })) }));
+  }
+  if (LEGACY_VISION_PROMPTS.has(value.vision.promptTemplate)) {
+    value.vision.promptTemplate = DEFAULT_VISION_PROMPT;
   }
   return withEnvFallback(value);
 }
