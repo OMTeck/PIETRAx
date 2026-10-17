@@ -421,7 +421,8 @@ export function coverCanvas(img: HTMLImageElement, aspect: number, maxDimension 
   const w = img.naturalWidth || 1;
   const h = img.naturalHeight || 1;
   const a = aspect > 0 && Number.isFinite(aspect) ? aspect : w / h;
-  const longEdge = Math.max(1, maxDimension);
+  // Never enlarge beyond the source: the export must stay lossless.
+  const longEdge = Math.max(1, Math.min(maxDimension, Math.max(w, h)));
   const cw = a >= 1 ? longEdge : Math.max(1, Math.round(longEdge * a));
   const ch = a >= 1 ? Math.max(1, Math.round(longEdge / a)) : longEdge;
   const c = document.createElement('canvas');
