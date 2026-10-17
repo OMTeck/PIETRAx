@@ -66,13 +66,16 @@ const aiEditSchema = z.object({
   prompt: z.string().min(1).max(1000),
   image: z.string().max(MAX_IMAGE_BYTES * 2), // data URL base64 (~1.33x)
   mime: z.string().max(64).default('image/jpeg'),
+  reference: z.string().max(MAX_IMAGE_BYTES * 2).optional(), // e.g. the exact material texture
+  referenceMime: z.string().max(64).default('image/jpeg'),
 });
 
 /**
  * AI image editing for the visualizer upload flow, powered by FLUX.2 klein 4B
  * on Cloudflare Workers AI (via the pietrax-ai Worker). The client sends a
  * <=512px image + prompt; the backend holds the Worker secret and returns the
- * generated image as a data URL.
+ * generated image as a data URL. An optional second reference image lets the
+ * model apply a specific material rather than an invented one.
  */
 visualizerRouter.post(
   '/ai-edit',
@@ -81,8 +84,14 @@ visualizerRouter.post(
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof aiEditSchema>;
     const { buffer, mime } = dataUrlToBuffer(body.image);
+    const reference = body.reference ? dataUrlToBuffer(body.reference) : null;
 
-    const result = await editImageWithFlux(body.prompt, buffer, body.mime || mime);
+    const result = await editImageWithFlux(
+      body.prompt,
+      buffer,
+      body.mime || mime,
+      reference ? { buffer: reference.buffer, mime: body.referenceMime || reference.mime } : undefined,
+    );
 
     res.json({
       status: 'ok',

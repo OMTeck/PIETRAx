@@ -311,7 +311,7 @@ export const publicApi = {
       '/api/visualizer/segment',
       body,
     ),
-  aiEditRoom: (body: { prompt: string; image: string; mime?: string }) =>
+  aiEditRoom: (body: { prompt: string; image: string; mime?: string; reference?: string; referenceMime?: string }) =>
     post<{ status: string; image: string }>(
       '/api/visualizer/ai-edit',
       body,

@@ -3,11 +3,11 @@ import { useLang } from '@/context/LanguageContext';
 import { useRoute } from '@/context/RouteContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { useCatalog } from '@/context/CatalogContext';
-import { pubMaterialName, type PubVisualizerSurface } from '@/lib/public';
+import { pubMaterialName, publicApi, type PubVisualizerSurface } from '@/lib/public';
 import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
   ArrowLeft, Upload, ZoomIn, RotateCcw,
-  Heart, Download, Share2, Check, Camera, X,
+  Heart, Download, Share2, Check, Camera, X, Sparkles,
 } from 'lucide-react';
 
 import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
@@ -23,6 +23,7 @@ import {
 } from '@/lib/visualizer/textureMapper';
 import { pointsToClipPath, simplifyPolygon } from '@/lib/visualizer/geometry';
 import { requestRoomSegments } from '@/lib/visualizer/segmentClient';
+import { compressImage } from '@/lib/visualizer/imagePreprocessor';
 import { downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
 import type { RoomLayout, Step, VisMaterial, NormalizedPoint, SurfaceKind } from '@/lib/visualizer/types';
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
@@ -34,6 +35,16 @@ const FALLBACK_SURFACES: PubVisualizerSurface[] = [
   { id: 'wall', nameAr: 'الجدار', nameEn: 'Wall', tileCm: 40, noun: 'wall', polygon: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 0.55 }, { x: 0, y: 0.55 }] },
   { id: 'countertop', nameAr: 'سطح العمل', nameEn: 'Countertop', tileCm: 60, noun: 'countertop and cabinetry', polygon: [{ x: 0, y: 0.4 }, { x: 1, y: 0.4 }, { x: 1, y: 0.6 }, { x: 0, y: 0.6 }] },
 ];
+
+/** Builds the edit-model prompt: names which image is the room and which is the
+ *  material reference, then folds in the admin template with {noun}/{material}. */
+function buildAiPrompt(template: string, noun: string, materialName: string, sizeHint: string): string {
+  const base = (template || 'Repaint only the {noun} with {material}.')
+    .replace(/\{noun\}/g, noun)
+    .replace(/\{material\}/g, materialName);
+  const size = sizeHint ? ` Use ${sizeHint} panels/tiles.` : '';
+  return `Image 1 is the room photo. Image 2 is the exact material to install (${materialName}). ${base}${size} Take the material's real veining, colour, tone and finish from image 2. Keep everything except the ${noun} identical to image 1.`;
+}
 
 export function VisualizerPage() {
   const { t, lang } = useLang();
@@ -65,6 +76,9 @@ export function VisualizerPage() {
   const installMode: 'realistic' | 'strict' = renderSettings?.mode === 'strict' ? 'strict' : 'realistic';
   const serverShadow = typeof renderSettings?.shadowStrength === 'number' ? renderSettings.shadowStrength : 0.4;
   const defaultSampling: 'nearest' | 'bilinear' = renderSettings?.defaultSampling === 'nearest' ? 'nearest' : 'bilinear';
+  const editEnabled = visualizerConfig?.edit?.enabled === true;
+  const editMaxDim = visualizerConfig?.edit?.maxInputDim ?? 500;
+  const editQuality = visualizerConfig?.edit?.quality ?? 0.85;
 
   const visMaterials: VisMaterial[] = useMemo(() => {
     return (visualizer?.materials ?? []).map((vm) => {
@@ -133,6 +147,13 @@ export function VisualizerPage() {
   const [compositeUrl, setCompositeUrl] = useState<string | null>(null);
   const [renderError, setRenderError] = useState(false);
   const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // LLM-applied result: FLUX takes the room photo + the exact material as a
+  // reference image and paints the real stone onto the selected surface.
+  const [aiResultUrl, setAiResultUrl] = useState<string | null>(null);
+  const [aiApplying, setAiApplying] = useState(false);
+  const [aiApplyError, setAiApplyError] = useState(false);
+  const aiAppliedRef = useRef<string | null>(null);
 
   // Room-scale calibration: a user-drawn reference of known real length.
   const [calibOpen, setCalibOpen] = useState(false);
@@ -474,6 +495,60 @@ export function VisualizerPage() {
     void renderCompositeRef.current(1100);
   }, [step, uploadedImage, selectedRoomId, selectedSurfaceId, selectedMaterialId, textureParams, uploadMode, layout, aiSegments, visMaterials, calibPxPerMeter]);
 
+  /**
+   * Applies the chosen material with the edit LLM: sends the room photo plus the
+   * exact material texture as a reference image, and shows the generated result.
+   * The deterministic engine composite stays as the fallback while it runs and if
+   * AI editing is unavailable or fails.
+   */
+  const applyWithAi = async () => {
+    const material = visMaterials.find((m) => m.id === selectedMaterialId);
+    const surfaceId = selectedSurfaceId || (uploadMode ? 'floor' : selectedRoom?.surfaces[0]?.id);
+    if (!roomImage || !material || !surfaceId) return;
+    setAiApplying(true);
+    setAiApplyError(false);
+    try {
+      const noun = surfaceConfigById[surfaceId]?.noun || surfaceId;
+      const sizeHint =
+        material.sizeLabel ||
+        (material.tileWidth && material.tileHeight ? `${material.tileWidth}×${material.tileHeight} cm` : '');
+      const prompt = buildAiPrompt(visualizerConfig?.edit?.promptTemplate ?? '', noun, material.enName || material.name, sizeHint);
+      const cropAspect = uploadMode ? undefined : presetAspect;
+      const room = await compressImage(roomImage, { maxDim: editMaxDim, quality: editQuality, ...(cropAspect ? { cropAspect } : {}) });
+      let reference: string | undefined;
+      if (material.textureUrl) {
+        try {
+          const tex = await compressImage(material.textureUrl, { maxDim: editMaxDim, quality: editQuality, cropAspect: 1 });
+          reference = tex.dataUrl;
+        } catch {
+          /* reference is optional — the model can still work from the prompt */
+        }
+      }
+      const res = await publicApi.aiEditRoom({
+        prompt,
+        image: room.dataUrl,
+        mime: 'image/jpeg',
+        ...(reference ? { reference, referenceMime: 'image/jpeg' } : {}),
+      });
+      setAiResultUrl(res.image);
+    } catch {
+      setAiApplyError(true);
+    } finally {
+      setAiApplying(false);
+    }
+  };
+  const applyWithAiRef = useRef(applyWithAi);
+  applyWithAiRef.current = applyWithAi;
+
+  // Auto-apply with the LLM once per room/surface/material when the result opens.
+  useEffect(() => {
+    if (step !== 'result' || !editEnabled) return;
+    const key = `${selectedRoomId ?? 'upload'}|${selectedSurfaceId ?? ''}|${selectedMaterialId ?? ''}|${roomImage ?? ''}`;
+    if (aiAppliedRef.current === key) return;
+    aiAppliedRef.current = key;
+    void applyWithAiRef.current();
+  }, [step, editEnabled, selectedRoomId, selectedSurfaceId, selectedMaterialId, roomImage]);
+
   /** Pick a surface and move to the material step. */
   const selectSurface = (surfaceId: string) => {
     setSelectedSurfaceId(surfaceId);
@@ -502,6 +577,17 @@ export function VisualizerPage() {
     if (exporting) return;
     setExporting(true);
     try {
+      // Export what is on screen: the LLM-applied result when shown, otherwise
+      // re-render the deterministic engine composite at full resolution.
+      if (!showOriginal && aiResultUrl) {
+        const blob = await (await fetch(aiResultUrl)).blob();
+        if (mode === 'download') {
+          downloadBlob(blob, 'pietrax-visualizer.png');
+        } else {
+          await shareBlob(blob, selectedMaterial?.name ?? 'PIETRAx', 'pietrax-visualizer.png');
+        }
+        return;
+      }
       // Re-render at full resolution and export losslessly as PNG.
       await renderCompositeRef.current(undefined);
       const canvas = compositeCanvasRef.current;
@@ -825,10 +911,15 @@ export function VisualizerPage() {
               {t('changeMaterial')}
             </button>
             <div className="flex flex-wrap gap-2">
+              {editEnabled && (
+                <button onClick={() => void applyWithAi()} disabled={aiApplying} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 bg-stone-900 text-ivory px-3 py-2 hover:bg-stone-800 transition-colors disabled:opacity-50">
+                  <Sparkles size={13} strokeWidth={1.5} /> {aiApplying ? t('aiEditing') : t('aiEditButton')}
+                </button>
+              )}
               <button onClick={() => setZoom(zoom === 1 ? 1.5 : 1)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                 <ZoomIn size={13} strokeWidth={1.5} /> {t('reset')}
               </button>
-              <button onClick={() => { setStep('room'); setUploadedImage(null); setUploadMode(false); setSelectedMaterialId(null); setShowOriginal(false); setCompositeUrl(null); }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
+              <button onClick={() => { setStep('room'); setUploadedImage(null); setUploadMode(false); setSelectedMaterialId(null); setShowOriginal(false); setCompositeUrl(null); setAiResultUrl(null); aiAppliedRef.current = null; }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                 <RotateCcw size={13} strokeWidth={1.5} /> {t('reset')}
               </button>
               <button onClick={() => setShowOriginal((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
@@ -844,16 +935,27 @@ export function VisualizerPage() {
             style={uploadMode && imageAspect ? { transform: `scale(${zoom})`, transformOrigin: 'center', aspectRatio: `${imageAspect}` } : { transform: `scale(${zoom})`, transformOrigin: 'center' }}
           >
             <img
-              src={showOriginal ? (roomImage ?? undefined) : (compositeUrl ?? roomImage ?? undefined)}
+              src={showOriginal ? (roomImage ?? undefined) : (aiResultUrl ?? compositeUrl ?? roomImage ?? undefined)}
               alt="Room"
               className="absolute inset-0 w-full h-full object-cover"
             />
+            {aiApplying && (
+              <div className="absolute inset-0 flex items-center justify-center bg-stone-950/40">
+                <span className="flex items-center gap-2 text-xs tracking-wider uppercase text-white">
+                  <span className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                  {t('aiEditing')}
+                </span>
+              </div>
+            )}
             {/* Labels */}
             <div className="absolute bottom-4 left-4 flex gap-2">
               <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">
                 {lang === 'ar' ? selectedSurface?.nameAr || selectedSurfaceId : selectedSurface?.nameEn || selectedSurfaceId}
               </span>
-              {!showOriginal && compositeUrl && (
+              {!showOriginal && aiResultUrl && (
+                <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">AI</span>
+              )}
+              {!showOriginal && !aiResultUrl && compositeUrl && (
                 <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">
                   {textureParams.lightingMode === 'realistic' ? 'Realistic' : 'Neutral'}
                 </span>
@@ -865,9 +967,12 @@ export function VisualizerPage() {
           </div>
 
           {renderError && <p className="mt-3 text-xs text-red-700">Could not render the texture.</p>}
+          {aiApplyError && <p className="mt-3 text-xs text-red-700">{editEnabled ? t('aiEditFailed') : t('aiEditUnavailable')}</p>}
 
-          {/* Realistic installation controls */}
-          {selectedMaterial && (
+          {/* Realistic installation controls (deterministic engine fallback).
+              Hidden while an LLM-applied result is shown, since it no longer
+              drives what is displayed. */}
+          {selectedMaterial && !aiResultUrl && (
             <div className="mt-6 border border-stone-200 bg-ivory p-5">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-stone-800">

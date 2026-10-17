@@ -204,15 +204,18 @@ function buildRequest(
     if (parts.data && parts.mediaType) {
       partList.push({ inline_data: { mime_type: parts.mediaType, data: parts.data } });
     }
+    const generationConfig: Record<string, unknown> = { responseMimeType: 'application/json' };
+    if (/2\.5/.test(model)) {
+      // Gemini 2.5 defaults to a large "thinking" budget that adds tens of
+      // seconds to what is a simple mask read. Disable it for latency.
+      generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    }
     return {
       url: `${base}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`,
       init: {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: partList }],
-          generationConfig: { responseMimeType: 'application/json' },
-        }),
+        body: JSON.stringify({ contents: [{ parts: partList }], generationConfig }),
       },
     };
   }
@@ -314,8 +317,9 @@ export async function analyzeSurfacesWithProvider(
   const promptText = settings.vision.promptTemplate || DEFAULT_VISION_PROMPT;
 
   const { data, mime } = await prepareImage(imageBuffer, provider.maxImageDim);
-  const width = (await sharp(data).metadata()).width ?? 0;
-  const height = (await sharp(data).metadata()).height ?? 0;
+  const meta = await sharp(data).metadata();
+  const width = meta.width ?? 0;
+  const height = meta.height ?? 0;
   if (!width || !height) {
     throw new AppError(502, 'Could not read the image dimensions.', 'VISION_BAD_IMAGE');
   }

@@ -44,9 +44,16 @@ export default {
     const height = form.get('height');
 
     // FLUX.2 klein expects multipart form data with the image as binary bytes.
+    // It supports up to 4 reference images (input_image_0..3); forward any that
+    // were supplied so a material reference can accompany the room photo.
     const out = new FormData();
     out.append('prompt', prompt.trim());
-    out.append('input_image_0', new Blob([await image.arrayBuffer()], { type: image.type || 'image/png' }));
+    for (let i = 0; i < 4; i++) {
+      const part = form.get(`input_image_${i}`);
+      if (part && typeof part !== 'string') {
+        out.append(`input_image_${i}`, new Blob([await part.arrayBuffer()], { type: part.type || 'image/png' }));
+      }
+    }
     if (guidance !== null && guidance !== '') out.append('guidance', String(guidance));
     if (width !== null && width !== '') out.append('width', String(width));
     if (height !== null && height !== '') out.append('height', String(height));

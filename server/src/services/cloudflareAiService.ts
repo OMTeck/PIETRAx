@@ -89,6 +89,7 @@ export async function editImageWithFlux(
   prompt: string,
   imageBuffer: Buffer,
   mime: string,
+  reference?: { buffer: Buffer; mime: string },
 ): Promise<CloudflareAiResult> {
   const settings = await getVisualizerSettings();
   const { enabled, workerUrl, workerSecret, guidance, timeoutMs } = settings.edit;
@@ -101,6 +102,12 @@ export async function editImageWithFlux(
   form.append('prompt', prompt);
   form.append('guidance', String(guidance));
   form.append('input_image_0', new Blob([imageBuffer], { type: mime || 'image/png' }), 'input.png');
+  // Optional second reference image (e.g. the exact material/slab texture) so
+  // FLUX applies the real material instead of inventing one. Klein-4B accepts
+  // up to 4 input images, each <=512px.
+  if (reference && reference.buffer.length > 0) {
+    form.append('input_image_1', new Blob([reference.buffer], { type: reference.mime || 'image/png' }), 'reference.png');
+  }
   const dims = imageDimensions(imageBuffer);
   if (dims) {
     const { width, height } = targetSize(dims.w, dims.h, {
