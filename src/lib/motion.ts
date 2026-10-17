@@ -203,3 +203,43 @@ export function useChapterTheme(resetKey?: string): 'light' | 'dark' | null {
   }, [resetKey]);
   return chapter;
 }
+
+/**
+ * Header-local "is the nav bar sitting over a dark section?" signal.
+ *
+ * `useChapterTheme` reports the chapter crossing the *viewport centre*, which lags
+ * the header by ~half a viewport — so a nav that follows it turns white while still
+ * parked over the light section that precedes a dark one (white-on-ivory, invisible).
+ * This reads the section under the header's own vertical position instead, so the
+ * nav flips exactly when the boundary passes underneath it.
+ */
+export function useHeaderOverDark(resetKey?: string): boolean {
+  const [overDark, setOverDark] = useState(false);
+  useEffect(() => {
+    let raf = 0;
+    const compute = () => {
+      raf = 0;
+      const y = 32; // inside the header for both its scrolled and unscrolled padding
+      let dark = false;
+      for (const s of document.querySelectorAll<HTMLElement>('[data-theme-section]')) {
+        const r = s.getBoundingClientRect();
+        if (r.top <= y && r.bottom > y) {
+          dark = s.dataset.themeSection === 'dark';
+        }
+      }
+      setOverDark(dark);
+    };
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(compute);
+    };
+    compute();
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    return () => {
+      window.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [resetKey]);
+  return overDark;
+}

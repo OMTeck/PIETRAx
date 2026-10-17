@@ -4,7 +4,7 @@ import { useLang } from '@/context/LanguageContext';
 import { useWishlist } from '@/context/WishlistContext';
 import { useRoute } from '@/context/RouteContext';
 import { useCatalog } from '@/context/CatalogContext';
-import { useChapterTheme, useScrollScene } from '@/lib/motion';
+import { useChapterTheme, useHeaderOverDark, useScrollScene } from '@/lib/motion';
 import { companySettings } from '@/lib/public';
 import type { TranslationKey } from '@/data/i18n';
 
@@ -16,7 +16,11 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
   const brand = companySettings(settings).nameEn || 'PIETRA';
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const chapter = useChapterTheme(path);
+  useChapterTheme(path); // drives the <html data-chapter> background morph
+  // Nav transparency follows the section under the header itself, not the
+  // centre-of-screen chapter (see useHeaderOverDark) — otherwise the nav goes
+  // white while still parked over a light section and disappears.
+  const overDark = useHeaderOverDark(path);
   const barRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -31,9 +35,8 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
     if (barRef.current) barRef.current.style.transform = `scaleX(${docProgress.toFixed(4)})`;
   });
 
-  // Chapter-adaptive nav: transparent with light text over dark chapters, frosted
-  // ivory with dark text over light chapters (and while scrolled on plain pages).
-  const overDark = chapter === 'dark';
+  // Chapter-adaptive nav: transparent with light text over dark sections, frosted
+  // ivory with dark text over light sections.
   const transparentNav = overDark;
 
   const navItems: { key: TranslationKey; path: string }[] = [
@@ -87,17 +90,18 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
               <button
                 key={item.key}
                 onClick={() => navigate(item.path)}
-                className={`text-xs tracking-[0.15em] uppercase link-underline transition-colors ${
+                aria-current={isActive(item.path) ? 'page' : undefined}
+                className={`text-sm tracking-[0.15em] uppercase transition-colors -my-3 py-3 ${
                   transparentNav
                     ? isActive(item.path)
                       ? 'text-white font-medium'
                       : 'text-white/80 hover:text-white'
                     : isActive(item.path)
                     ? 'text-stone-900 font-medium'
-                    : 'text-stone-600 hover:text-stone-900'
+                    : 'text-stone-700 hover:text-stone-900'
                 }`}
               >
-                {t(item.key)}
+                <span className="link-underline">{t(item.key)}</span>
               </button>
             ))}
           </nav>
@@ -106,32 +110,32 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
           <div className="flex items-center gap-4 md:gap-5">
             <button
               onClick={onSearchOpen}
-              className={`transition-colors ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
+              className={`transition-colors -my-3 py-3 -mx-2 px-2 ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
               aria-label={t('search')}
             >
               <Search size={18} strokeWidth={1.5} />
             </button>
             <button
               onClick={() => navigate('/wishlist')}
-              className={`relative transition-colors ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
+              className={`relative transition-colors -my-3 py-3 -mx-2 px-2 ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
               aria-label={t('wishlist')}
             >
               <Heart size={18} strokeWidth={1.5} />
               {wishlistItems.length > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-accent text-white text-[10px] flex items-center justify-center rounded-full">
+                <span className="absolute top-0 right-0 w-4 h-4 bg-accent text-white text-[10px] flex items-center justify-center rounded-full">
                   {wishlistItems.length}
                 </span>
               )}
             </button>
             <button
               onClick={toggleLang}
-              className={`text-xs tracking-[0.15em] uppercase transition-colors ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
+              className={`text-sm tracking-[0.15em] uppercase transition-colors -my-3 py-3 -mx-2 px-2 ${transparentNav ? 'text-white/90 hover:text-white' : 'text-stone-700 hover:text-stone-900'}`}
             >
               {lang === 'ar' ? 'EN' : 'AR'}
             </button>
             <button
               onClick={() => setMobileOpen(true)}
-              className={`lg:hidden transition-colors ${transparentNav ? 'text-white' : 'text-stone-900'}`}
+              className={`lg:hidden transition-colors -my-3 py-3 -mx-2 px-2 ${transparentNav ? 'text-white' : 'text-stone-900'}`}
               aria-label="Menu"
             >
               <Menu size={22} strokeWidth={1.5} />
