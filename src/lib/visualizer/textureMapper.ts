@@ -638,7 +638,8 @@ export function paramsFromMaterial(
     tileHeightCm: h,
     patternScale: material.patternScale && material.patternScale > 0 ? material.patternScale : 1,
     rotationDeg: material.rotation ?? 0,
-    groutWidthCm: material.groutWidth && material.groutWidth > 0 ? material.groutWidth : DEFAULT_TEXTURE_PARAMS.groutWidthCm,
+    // Catalog joint width is stored in millimetres; the engine works in centimetres.
+    groutWidthCm: material.groutWidth && material.groutWidth > 0 ? material.groutWidth / 10 : DEFAULT_TEXTURE_PARAMS.groutWidthCm,
     groutColor: material.groutColor || DEFAULT_TEXTURE_PARAMS.groutColor,
     sampling: strict ? 'nearest' : 'bilinear',
     lightingMode: strict ? 'neutral' : 'realistic',
