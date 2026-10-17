@@ -103,7 +103,6 @@ export function VisualizerPage() {
   const [uploadMode, setUploadMode] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
-  const [uploadSurface, setUploadSurface] = useState<string>('floor');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterCategory, setFilterCategory] = useState<string>('All');
   const [zoom, setZoom] = useState(1);
@@ -234,11 +233,6 @@ export function VisualizerPage() {
       }
     }
     setAiSegments((prev) => ({ ...prev, ...mapped }));
-    // Auto-select the largest detected region so the user lands on a usable default.
-    const bestId = (Object.keys(mapped) as string[]).sort(
-      (a, b) => (mapped[b]?.length ?? 0) - (mapped[a]?.length ?? 0),
-    )[0];
-    if (bestId) setUploadSurface(bestId);
   };
 
   /**
