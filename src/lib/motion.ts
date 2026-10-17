@@ -172,14 +172,28 @@ export function useChapterTheme(resetKey?: string): 'light' | 'dark' | null {
     const sections = Array.from(
       document.querySelectorAll<HTMLElement>('[data-theme-section]'),
     );
+    setChapter(null);
+    document.documentElement.removeAttribute('data-chapter');
     if (sections.length === 0) return;
+    const apply = (el: HTMLElement) => {
+      const t = el.dataset.themeSection === 'light' ? 'light' : 'dark';
+      setChapter(t);
+      document.documentElement.setAttribute('data-chapter', t);
+    };
+    const atCenter = () => {
+      const cy = window.innerHeight / 2;
+      for (const s of sections) {
+        const r = s.getBoundingClientRect();
+        if (r.top <= cy && r.bottom >= cy) return s;
+      }
+      return null;
+    };
+    const initial = atCenter();
+    if (initial) apply(initial);
     const io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const t = (entry.target as HTMLElement).dataset.themeSection === 'light' ? 'light' : 'dark';
-          setChapter(t);
-          document.documentElement.setAttribute('data-chapter', t);
+          if (entry.isIntersecting) apply(entry.target as HTMLElement);
         }
       },
       { rootMargin: '-50% 0px -50% 0px', threshold: 0 },

@@ -34,7 +34,7 @@ export function Header({ onSearchOpen }: { onSearchOpen: () => void }) {
   // Chapter-adaptive nav: transparent with light text over dark chapters, frosted
   // ivory with dark text over light chapters (and while scrolled on plain pages).
   const overDark = chapter === 'dark';
-  const transparentNav = !scrolled || overDark;
+  const transparentNav = overDark;
 
   const navItems: { key: TranslationKey; path: string }[] = [
     { key: 'home', path: '/' },
