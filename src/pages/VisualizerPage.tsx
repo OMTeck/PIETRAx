@@ -164,24 +164,6 @@ export function VisualizerPage() {
     });
   }, [searchQuery, filterCategory, visMaterials]);
 
-  if (loading && rooms.length === 0) {
-    return (
-      <div className="pt-32 pb-20 min-h-screen bg-stone-100 text-center">
-        <p className="text-stone-500">{t('loading')}</p>
-      </div>
-    );
-  }
-
-  if (visualizerConfig && !visualizerConfig.enabled) {
-    return (
-      <div className="pt-32 pb-20 min-h-screen bg-stone-100 text-center">
-        <p className="text-stone-500">
-          {lang === 'ar' ? 'أداة المحاكاة غير متاحة حاليًا.' : 'The room visualizer is currently unavailable.'}
-        </p>
-      </div>
-    );
-  }
-
   const selectedRoom = rooms.find((r) => r.id === selectedRoomId);
   const selectedSurface = selectedRoom?.surfaces.find((s) => s.id === selectedSurfaceId);
   const selectedMaterial = visMaterials.find((m) => m.id === selectedMaterialId);
@@ -386,6 +368,24 @@ export function VisualizerPage() {
       setExporting(false);
     }
   };
+
+  if (loading && rooms.length === 0) {
+    return (
+      <div className="pt-32 pb-20 min-h-screen bg-stone-100 text-center">
+        <p className="text-stone-500">{t('loading')}</p>
+      </div>
+    );
+  }
+
+  if (visualizerConfig && !visualizerConfig.enabled) {
+    return (
+      <div className="pt-32 pb-20 min-h-screen bg-stone-100 text-center">
+        <p className="text-stone-500">
+          {lang === 'ar' ? 'أداة المحاكاة غير متاحة حاليًا.' : 'The room visualizer is currently unavailable.'}
+        </p>
+      </div>
+    );
+  }
 
   const steps: Step[] = ['room', 'surface', 'material', 'result'];
   const currentStepIndex = steps.indexOf(step);
