@@ -17,8 +17,23 @@
 import type { NormalizedPoint, SurfaceKind } from './types';
 
 export type SamplingMode = 'nearest' | 'bilinear';
-export type InstallPattern = 'stack' | 'running-bond' | 'third-bond';
+/**
+ * `bookmatch` mirrors alternate columns (two-panel), `bookmatch-4` also mirrors
+ * alternate rows (four-panel). Both are real mirrored installations of the SAME
+ * source slab — no AI regeneration, just geometric mirroring of source pixels.
+ */
+export type InstallPattern = 'stack' | 'running-bond' | 'third-bond' | 'bookmatch' | 'bookmatch-4';
 export type LightingMode = 'neutral' | 'realistic';
+
+/** Normalized (0..1) sub-region of the source texture used as the slab to cut from.
+ *  Lets the user position a cut on the full slab; the whole tiled field samples
+ *  only this region. null = use the entire texture. */
+export interface SourceRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export interface TextureMapParams {
   /** Physical piece width in centimetres. */
@@ -57,6 +72,9 @@ export interface TextureMapParams {
   featherPx: number;
   /** Front-edge thickness for countertops in cm (0 = none). */
   edgeThicknessCm: number;
+  /** Which cut of the source slab the whole field is laid from (slab cutting).
+   *  null = the full texture is the slab. */
+  sourceRegion?: SourceRegion | null;
 }
 
 export const DEFAULT_TEXTURE_PARAMS: TextureMapParams = {
@@ -465,8 +483,25 @@ export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElem
         g = grout.g;
         b = grout.b;
       } else {
-        const u = groutX > 0 ? (fx - groutX) / (1 - groutX) : fx;
-        const v = groutY > 0 ? (fy - groutY) / (1 - groutY) : fy;
+        let u = groutX > 0 ? (fx - groutX) / (1 - groutX) : fx;
+        let v = groutY > 0 ? (fy - groutY) / (1 - groutY) : fy;
+
+        // Bookmatch: mirror alternate pieces (two-panel) and, for four-panel,
+        // alternate rows too — a real mirrored install of the same slab.
+        if (params.pattern === 'bookmatch' || params.pattern === 'bookmatch-4') {
+          const colEff = Math.floor(gx);
+          const rowEff = Math.floor(gy);
+          if (((colEff % 2) + 2) % 2 === 1) u = 1 - u;
+          if (params.pattern === 'bookmatch-4' && ((rowEff % 2) + 2) % 2 === 1) v = 1 - v;
+        }
+
+        // Slab cutting: sample only the chosen region of the source texture.
+        const region = params.sourceRegion;
+        if (region) {
+          u = region.x + u * region.w;
+          v = region.y + v * region.h;
+        }
+
         const c = sampleTexture(texData, texW, texH, u, v, params.sampling);
         r = c.r;
         g = c.g;
@@ -522,7 +557,10 @@ export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElem
       }
       if (bottom < 0) continue;
       const uv = applyH(hi, x + 0.5, bottom + 0.5);
-      const c = sampleTexture(texData, texW, texH, uv.x, uv.y, params.sampling);
+      const region = params.sourceRegion;
+      const eu = region ? region.x + uv.x * region.w : uv.x;
+      const ev = region ? region.y + uv.y * region.h : uv.y;
+      const c = sampleTexture(texData, texW, texH, eu, ev, params.sampling);
       for (let d = 1; d <= edgePx; d++) {
         const y = bottom + d;
         if (y > H - 1) break;
@@ -646,4 +684,62 @@ export function paramsFromMaterial(
     shadowStrength: strict ? 0 : DEFAULT_TEXTURE_PARAMS.shadowStrength,
     featherPx: strict ? 0 : DEFAULT_TEXTURE_PARAMS.featherPx,
   };
+}
+
+/**
+ * Physical size of the selected surface in metres. Uses the same quad-fitting
+ * the renderer uses, measured in the original photo pixel space, so the result
+ * is independent of any preview downscaling. Reported dimensions are only as
+ * accurate as `pxPerMeter` (which comes from calibration or estimation).
+ */
+export function measureSurfacePhysical(opts: {
+  polygon: NormalizedPoint[];
+  pxPerMeter: number;
+  imageWidth: number;
+  imageHeight: number;
+}): { widthM: number; heightM: number; areaM2: number } | null {
+  const { polygon, pxPerMeter, imageWidth, imageHeight } = opts;
+  if (polygon.length < 3 || !imageWidth || !imageHeight || !pxPerMeter) return null;
+  const poly = polygon.map((p) => ({ x: p.x * imageWidth, y: p.y * imageHeight }));
+  const quad = fitQuad(poly);
+  const topW = dist(quad[0], quad[1]);
+  const bottomW = dist(quad[3], quad[2]);
+  const leftH = dist(quad[0], quad[3]);
+  const rightH = dist(quad[1], quad[2]);
+  const widthPx = (topW + bottomW) / 2;
+  const heightPx = (leftH + rightH) / 2;
+  const widthM = Math.max(0.01, widthPx / pxPerMeter);
+  const heightM = Math.max(0.01, heightPx / pxPerMeter);
+  return { widthM, heightM, areaM2: widthM * heightM };
+}
+
+/**
+ * Coverage / waste estimate for a straight or mirrored grid of pieces over a
+ * rectangular surface. Waste counts the off-cuts at the surface edges that
+ * cannot be reused on another full piece (a standard installation estimate).
+ */
+export function computeInstallStats(opts: {
+  surfaceWidthM: number;
+  surfaceHeightM: number;
+  pieceWidthM: number;
+  pieceHeightM: number;
+}): {
+  piecesX: number;
+  piecesY: number;
+  piecesTotal: number;
+  surfaceAreaM2: number;
+  laidAreaM2: number;
+  wastePct: number;
+} {
+  const sw = Math.max(0.01, opts.surfaceWidthM);
+  const sh = Math.max(0.01, opts.surfaceHeightM);
+  const pw = Math.max(0.01, opts.pieceWidthM);
+  const ph = Math.max(0.01, opts.pieceHeightM);
+  const piecesX = Math.max(1, Math.ceil(sw / pw - 1e-6));
+  const piecesY = Math.max(1, Math.ceil(sh / ph - 1e-6));
+  const piecesTotal = piecesX * piecesY;
+  const surfaceAreaM2 = sw * sh;
+  const laidAreaM2 = piecesTotal * pw * ph;
+  const wastePct = laidAreaM2 > 0 ? Math.max(0, ((laidAreaM2 - surfaceAreaM2) / laidAreaM2) * 100) : 0;
+  return { piecesX, piecesY, piecesTotal, surfaceAreaM2, laidAreaM2, wastePct };
 }

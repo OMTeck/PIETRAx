@@ -20,6 +20,7 @@ import {
   DEFAULT_TEXTURE_PARAMS,
   type TextureMapParams,
   type InstallPattern,
+  type SourceRegion,
 } from '@/lib/visualizer/textureMapper';
 import { pointsToClipPath, simplifyPolygon } from '@/lib/visualizer/geometry';
 import { requestRoomSegments } from '@/lib/visualizer/segmentClient';
@@ -161,6 +162,12 @@ export function VisualizerPage() {
   const [calibLengthCm, setCalibLengthCm] = useState<string>('100');
   const [calibPxPerMeter, setCalibPxPerMeter] = useState<number | null>(null);
   const [calibImgAspect, setCalibImgAspect] = useState(1);
+
+  // Realistic installation extras: slab cutting region (source selection) and
+  // comparison controls.
+  const [sourceRegion, setSourceRegion] = useState<SourceRegion | null>(null);
+  const [showCompare, setShowCompare] = useState(false);
+  const [compareSplit, setCompareSplit] = useState(0.5);
 
   /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
   useEffect(() => {
@@ -457,7 +464,7 @@ export function VisualizerPage() {
         roomImage: box,
         polygon,
         texture,
-        params: textureParams,
+        params: { ...textureParams, sourceRegion },
         pxPerMeter: ppmBase * (box.width / imageW),
         surfaceKind: surfaceKindFor(surfaceId),
       });
@@ -493,7 +500,7 @@ export function VisualizerPage() {
   useEffect(() => {
     if (step !== 'result') return;
     void renderCompositeRef.current(1100);
-  }, [step, uploadedImage, selectedRoomId, selectedSurfaceId, selectedMaterialId, textureParams, uploadMode, layout, aiSegments, visMaterials, calibPxPerMeter]);
+  }, [step, uploadedImage, selectedRoomId, selectedSurfaceId, selectedMaterialId, textureParams, uploadMode, layout, aiSegments, visMaterials, calibPxPerMeter, sourceRegion]);
 
   /**
    * Applies the chosen material with the edit LLM: sends the room photo plus the
@@ -919,11 +926,19 @@ export function VisualizerPage() {
               <button onClick={() => setZoom(zoom === 1 ? 1.5 : 1)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                 <ZoomIn size={13} strokeWidth={1.5} /> {t('reset')}
               </button>
-              <button onClick={() => { setStep('room'); setUploadedImage(null); setUploadMode(false); setSelectedMaterialId(null); setShowOriginal(false); setCompositeUrl(null); setAiResultUrl(null); aiAppliedRef.current = null; }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
+              <button onClick={() => { setStep('room'); setUploadedImage(null); setUploadMode(false); setSelectedMaterialId(null); setShowOriginal(false);           setCompositeUrl(null);
+          setAiResultUrl(null);
+          aiAppliedRef.current = null;
+          setSourceRegion(null);
+          setShowCompare(false);
+          setCompareSplit(0.5); }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                 <RotateCcw size={13} strokeWidth={1.5} /> {t('reset')}
               </button>
               <button onClick={() => setShowOriginal((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                 {showOriginal ? t('aiEditResult') : t('originalImage')}
+              </button>
+              <button onClick={() => setShowCompare((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
+                {showCompare ? 'Hide Before/After' : 'Before / After'}
               </button>
             </div>
           </div>
@@ -939,15 +954,49 @@ export function VisualizerPage() {
               alt="Room"
               className="absolute inset-0 w-full h-full object-cover"
             />
-            {aiApplying && (
-              <div className="absolute inset-0 flex items-center justify-center bg-stone-950/40">
-                <span className="flex items-center gap-2 text-xs tracking-wider uppercase text-white">
-                  <span className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                  {t('aiEditing')}
-                </span>
-              </div>
-            )}
-            {/* Labels */}
+              {aiApplying && (
+                <div className="absolute inset-0 flex items-center justify-center bg-stone-950/40">
+                  <span className="flex items-center gap-2 text-xs tracking-wider uppercase text-white">
+                    <span className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                    {t('aiEditing')}
+                  </span>
+                </div>
+              )}
+              {/* Before/After slider overlay (works with AI or deterministic result) */}
+              {!showOriginal && showCompare && compositeUrl && (
+                <div className="absolute inset-0">
+                  <img
+                    src={aiResultUrl ?? compositeUrl ?? undefined}
+                    alt="After"
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{
+                      clipPath: `polygon(${compareSplit * 100}% 0, 100% 0, 100% 100%, ${compareSplit * 100}% 100%)`,
+                    }}
+                  />
+                  <img
+                    src={roomImage ?? undefined}
+                    alt="Before"
+                    className="absolute inset-0 w-full h-full object-cover opacity-80"
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.001}
+                    value={compareSplit}
+                    onChange={(e) => setCompareSplit(Number(e.target.value))}
+                    className="absolute top-1/2 left-0 -translate-y-1/2 w-full h-0.5 bg-white/60 accent-stone-900"
+                    style={{ touchAction: 'pan-x' }}
+                  />
+                  <div
+                    className="absolute top-1/2 -translate-y-1/2 w-px h-10 bg-white"
+                    style={{ left: `${compareSplit * 100}%` }}
+                  />
+                  <span className="absolute top-3 left-3 text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">Before</span>
+                  <span className="absolute top-3 right-3 text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">After</span>
+                </div>
+              )}
+              {/* Labels */}
             <div className="absolute bottom-4 left-4 flex gap-2">
               <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">
                 {lang === 'ar' ? selectedSurface?.nameAr || selectedSurfaceId : selectedSurface?.nameEn || selectedSurfaceId}
@@ -956,10 +1005,13 @@ export function VisualizerPage() {
                 <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">AI</span>
               )}
               {!showOriginal && !aiResultUrl && compositeUrl && (
-                <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">
-                  {textureParams.lightingMode === 'realistic' ? 'Realistic' : 'Neutral'}
-                </span>
-              )}
+                    <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">
+                      {textureParams.lightingMode === 'realistic' ? 'Realistic' : 'Neutral'}
+                    </span>
+                  )}
+                  {sourceRegion && !showOriginal && compositeUrl && (
+                    <span className="text-xs tracking-wider uppercase text-white bg-stone-900/80 px-3 py-1.5">Slab cut</span>
+                  )}
               {showOriginal && (
                 <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">{t('originalImage')}</span>
               )}
@@ -969,9 +1021,70 @@ export function VisualizerPage() {
           {renderError && <p className="mt-3 text-xs text-red-700">Could not render the texture.</p>}
           {aiApplyError && <p className="mt-3 text-xs text-red-700">{editEnabled ? t('aiEditFailed') : t('aiEditUnavailable')}</p>}
 
-          {/* Realistic installation controls (deterministic engine fallback).
-              Hidden while an LLM-applied result is shown, since it no longer
-              drives what is displayed. */}
+              {/* Slab cutting planner (select a region of the source material) */}
+              {!aiResultUrl && selectedMaterial && (
+                <div className="mt-6 border border-stone-200 bg-ivory p-5">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-stone-800">Slab Cutting Planner</h3>
+                    <span className="text-[11px] uppercase tracking-wider text-stone-500">Use only a cut from the slab</span>
+                  </div>
+                  <p className="text-xs text-stone-600 mb-3">
+                    Drag to set the normalized region of the material texture to use for the entire surface. Leave clear to use the full slab.
+                  </p>
+                  <div className="grid gap-4 md:grid-cols-[240px,1fr]">
+                    <div className="relative w-full aspect-square border border-stone-300 bg-stone-100 overflow-hidden">
+                      <img
+                        src={selectedMaterial.textureUrl}
+                        alt="Material slab"
+                        className="absolute inset-0 w-full h-full object-cover"
+                      />
+                      {sourceRegion && (
+                        <div
+                          className="absolute border-2 border-amber-600 bg-amber-600/20 pointer-events-none"
+                          style={{
+                            left: `${(sourceRegion.x) * 100}%`,
+                            top: `${(sourceRegion.y) * 100}%`,
+                            width: `${sourceRegion.w * 100}%`,
+                            height: `${sourceRegion.h * 100}%`,
+                          }}
+                        />
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs text-stone-600">
+                        <span className="mb-1 block">Region X · Y · W · H (0..1)</span>
+                        <div className="grid grid-cols-4 gap-2">
+                          <input type="number" step={0.01} min={0} max={1} className="border border-stone-300 px-2 py-1.5 text-sm" value={sourceRegion?.x ?? 0} onChange={(e) => {
+                            const v = Math.max(0, Math.min(1, Number(e.target.value)));
+                            setSourceRegion({ x: v, y: sourceRegion?.y ?? 0, w: sourceRegion?.w ?? 0.5, h: sourceRegion?.h ?? 0.5 });
+                          }} />
+                          <input type="number" step={0.01} min={0} max={1} className="border border-stone-300 px-2 py-1.5 text-sm" value={sourceRegion?.y ?? 0} onChange={(e) => {
+                            const v = Math.max(0, Math.min(1, Number(e.target.value)));
+                            setSourceRegion({ x: sourceRegion?.x ?? 0, y: v, w: sourceRegion?.w ?? 0.5, h: sourceRegion?.h ?? 0.5 });
+                          }} />
+                          <input type="number" step={0.01} min={0} max={1} className="border border-stone-300 px-2 py-1.5 text-sm" value={sourceRegion?.w ?? 0.5} onChange={(e) => {
+                            const v = Math.max(0.01, Math.min(1, Number(e.target.value)));
+                            setSourceRegion({ x: sourceRegion?.x ?? 0, y: sourceRegion?.y ?? 0, w: v, h: sourceRegion?.h ?? 0.5 });
+                          }} />
+                          <input type="number" step={0.01} min={0} max={1} className="border border-stone-300 px-2 py-1.5 text-sm" value={sourceRegion?.h ?? 0.5} onChange={(e) => {
+                            const v = Math.max(0.01, Math.min(1, Number(e.target.value)));
+                            setSourceRegion({ x: sourceRegion?.x ?? 0, y: sourceRegion?.y ?? 0, w: sourceRegion?.w ?? 0.5, h: v });
+                          }} />
+                        </div>
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={() => setSourceRegion(null)} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">Clear cut</button>
+                        <button onClick={() => setSourceRegion({ x: 0, y: 0, w: 0.5, h: 0.5 })} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">Half slab</button>
+                        <button onClick={() => setSourceRegion({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 })} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">Center 50%</button>
+                      </div>
+                      <div className="text-xs text-stone-600">
+                        <span className="uppercase tracking-wider mr-1">Mode</span>
+                        {sourceRegion ? 'Cut region only' : 'Full slab'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
           {selectedMaterial && !aiResultUrl && (
             <div className="mt-6 border border-stone-200 bg-ivory p-5">
               <div className="mb-4 flex items-center justify-between">
@@ -1030,15 +1143,17 @@ export function VisualizerPage() {
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mt-4">
                 <label className="block text-xs text-stone-600">
                   <span className="mb-1 block">Installation pattern</span>
-                  <select
-                    className="w-full border border-stone-300 px-2 py-1.5 text-sm"
-                    value={textureParams.pattern}
-                    onChange={(e) => setTextureParams({ ...textureParams, pattern: e.target.value as InstallPattern })}
-                  >
-                    <option value="stack">Straight lay</option>
-                    <option value="running-bond">Running bond (½)</option>
-                    <option value="third-bond">Third bond (⅓)</option>
-                  </select>
+                    <select
+                     className="w-full border border-stone-300 px-2 py-1.5 text-sm"
+                     value={textureParams.pattern}
+                     onChange={(e) => setTextureParams({ ...textureParams, pattern: e.target.value as InstallPattern })}
+                   >
+                     <option value="stack">Straight lay</option>
+                     <option value="running-bond">Running bond (½)</option>
+                     <option value="third-bond">Third bond (⅓)</option>
+                     <option value="bookmatch">Bookmatch (2-panel)</option>
+                     <option value="bookmatch-4">Bookmatch (4-panel)</option>
+                   </select>
                 </label>
                 <label className="block text-xs text-stone-600">
                   <span className="mb-1 block">Joint width (mm)</span>
