@@ -21,6 +21,8 @@ import {
   type TextureMapParams,
   type InstallPattern,
   type SourceRegion,
+  measureSurfacePhysical,
+  computeInstallStats,
 } from '@/lib/visualizer/textureMapper';
 import { pointsToClipPath, simplifyPolygon } from '@/lib/visualizer/geometry';
 import { requestRoomSegments } from '@/lib/visualizer/segmentClient';
@@ -168,6 +170,8 @@ export function VisualizerPage() {
   const [sourceRegion, setSourceRegion] = useState<SourceRegion | null>(null);
   const [showCompare, setShowCompare] = useState(false);
   const [compareSplit, setCompareSplit] = useState(0.5);
+  /** Coverage / waste readout for the current surface + piece size. */
+  const [installStats, setInstallStats] = useState<ReturnType<typeof computeInstallStats> | null>(null);
 
   /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
   useEffect(() => {
@@ -471,6 +475,25 @@ export function VisualizerPage() {
       compositeCanvasRef.current = canvas;
       setCompositeUrl(canvas.toDataURL('image/png'));
       setRenderError(false);
+      // Coverage / waste readout from the same physical measurement the render uses.
+      const measured = measureSurfacePhysical({
+        polygon,
+        pxPerMeter: ppmBase * (box.width / imageW),
+        imageWidth: box.width,
+        imageHeight: box.height,
+      });
+      if (measured) {
+        const pieceW = (textureParams.repeatX > 0 ? measured.widthM / textureParams.repeatX : (textureParams.tileWidthCm * textureParams.patternScale) / 100);
+        const pieceH = (textureParams.repeatY > 0 ? measured.heightM / textureParams.repeatY : (textureParams.tileHeightCm * textureParams.patternScale) / 100);
+        setInstallStats(computeInstallStats({
+          surfaceWidthM: measured.widthM,
+          surfaceHeightM: measured.heightM,
+          pieceWidthM: pieceW,
+          pieceHeightM: pieceH,
+        }));
+      } else {
+        setInstallStats(null);
+      }
     } catch {
       setRenderError(true);
     }
@@ -940,6 +963,11 @@ export function VisualizerPage() {
               <button onClick={() => setShowCompare((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
                 {showCompare ? 'Hide Before/After' : 'Before / After'}
               </button>
+              {aiResultUrl && (
+                <button onClick={() => { setAiResultUrl(null); setShowCompare(false); }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 hover:bg-stone-900 hover:text-ivory transition-colors">
+                  <Check size={13} strokeWidth={1.5} /> Precise render
+                </button>
+              )}
             </div>
           </div>
 
@@ -1254,6 +1282,28 @@ export function VisualizerPage() {
                   </select>
                 </label>
               </div>
+
+              {/* Coverage / waste readout (physical estimate from the measured surface) */}
+              {installStats && (
+                <div className="mt-5 border-t border-stone-200 pt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-stone-700">
+                  <div>
+                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">Surface</span>
+                    <span className="text-stone-900">{installStats.surfaceAreaM2.toFixed(1)} m²</span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">Pieces</span>
+                    <span className="text-stone-900">{installStats.piecesTotal} ({installStats.piecesX}×{installStats.piecesY})</span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">Laid area</span>
+                    <span className="text-stone-900">{installStats.laidAreaM2.toFixed(1)} m²</span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">Est. waste</span>
+                    <span className="text-stone-900">{installStats.wastePct.toFixed(1)}%</span>
+                  </div>
+                </div>
+              )}
 
               {/* Room scale / calibration */}
               <div className="mt-5 border-t border-stone-200 pt-4 flex flex-wrap items-center justify-between gap-3">
