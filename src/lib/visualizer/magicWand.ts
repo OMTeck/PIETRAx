@@ -185,35 +185,54 @@ function morph(mask: Uint8Array, w: number, h: number, r: number, dilate: boolea
   return out;
 }
 
-/** Keeps only the largest 4-connected component. */
-function largestComponent(mask: Uint8Array, w: number, h: number): Uint8Array {
+/** Labels the 4-connected components of the mask; sizes[0] is unused. */
+function labelComponents(mask: Uint8Array, w: number, h: number): { label: Int32Array; sizes: number[] } {
   const label = new Int32Array(w * h);
   const queue = new Int32Array(w * h);
-  let best = 0, bestSize = 0, next = 0;
+  const sizes: number[] = [0];
   for (let i = 0; i < w * h; i++) {
     if (!mask[i] || label[i]) continue;
-    next++;
+    const id = sizes.length;
     let head = 0, tail = 0, size = 0;
     queue[tail++] = i;
-    label[i] = next;
+    label[i] = id;
     while (head < tail) {
       const p = queue[head++];
       size++;
       const px = p % w, py = (p - px) / w;
       const nb = [px > 0 ? p - 1 : -1, px < w - 1 ? p + 1 : -1, py > 0 ? p - w : -1, py < h - 1 ? p + w : -1];
       for (const q of nb) {
-        if (q >= 0 && mask[q] && !label[q]) { label[q] = next; queue[tail++] = q; }
+        if (q >= 0 && mask[q] && !label[q]) { label[q] = id; queue[tail++] = q; }
       }
     }
-    if (size > bestSize) { bestSize = size; best = next; }
+    sizes.push(size);
   }
+  return { label, sizes };
+}
+
+/** Keeps only the largest 4-connected component. */
+function largestComponent(mask: Uint8Array, w: number, h: number): Uint8Array {
+  const { label, sizes } = labelComponents(mask, w, h);
+  let best = 0;
+  for (let id = 1; id < sizes.length; id++) if (sizes[id] > sizes[best]) best = id;
   const out = new Uint8Array(w * h);
   if (best) for (let i = 0; i < w * h; i++) out[i] = label[i] === best ? 1 : 0;
   return out;
 }
 
-/** Fills enclosed holes (a polygon cannot represent them anyway). */
-function fillHoles(mask: Uint8Array, w: number, h: number): Uint8Array {
+/** Drops components smaller than `minSize` pixels (selection noise). */
+function dropSmallComponents(mask: Uint8Array, w: number, h: number, minSize: number): Uint8Array {
+  const { label, sizes } = labelComponents(mask, w, h);
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) if (label[i] && sizes[label[i]] >= minSize) out[i] = 1;
+  return out;
+}
+
+/**
+ * Labels the background components that do not touch the frame (holes).
+ * Returns the label image (0 = mask or outside) and each hole's pixel count.
+ */
+function labelHoles(mask: Uint8Array, w: number, h: number): { label: Int32Array; sizes: number[] } {
   const outside = new Uint8Array(w * h);
   const queue = new Int32Array(w * h);
   let tail = 0;
@@ -229,8 +248,36 @@ function fillHoles(mask: Uint8Array, w: number, h: number): Uint8Array {
     if (py > 0) push(p - w);
     if (py < h - 1) push(p + w);
   }
-  const out = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) out[i] = outside[i] ? 0 : 1;
+  const label = new Int32Array(w * h);
+  const sizes: number[] = [0];
+  for (let i = 0; i < w * h; i++) {
+    if (mask[i] || outside[i] || label[i]) continue;
+    const id = sizes.length;
+    let qh = 0, qt = 0, size = 0;
+    queue[qt++] = i;
+    label[i] = id;
+    while (qh < qt) {
+      const p = queue[qh++];
+      size++;
+      const px = p % w, py = (p - px) / w;
+      const nb = [px > 0 ? p - 1 : -1, px < w - 1 ? p + 1 : -1, py > 0 ? p - w : -1, py < h - 1 ? p + w : -1];
+      for (const q of nb) {
+        if (q >= 0 && !mask[q] && !outside[q] && !label[q]) { label[q] = id; queue[qt++] = q; }
+      }
+    }
+    sizes.push(size);
+  }
+  return { label, sizes };
+}
+
+/** Fills enclosed holes smaller than `maxHole` pixels (Infinity = all). */
+function fillHoles(mask: Uint8Array, w: number, h: number, maxHole = Infinity): Uint8Array {
+  const { label, sizes } = labelHoles(mask, w, h);
+  const out = new Uint8Array(mask);
+  for (let i = 0; i < w * h; i++) {
+    const id = label[i];
+    if (id && sizes[id] < maxHole) out[i] = 1;
+  }
   return out;
 }
 
@@ -239,6 +286,19 @@ export function cleanMask(mask: Uint8Array, w: number, h: number, radius = 2): U
   const closed = morph(morph(mask, w, h, radius, true), w, h, radius, false);
   return fillHoles(largestComponent(closed, w, h), w, h);
 }
+
+/** Holes smaller than this share of the selection are treated as noise. */
+const MIN_HOLE_FRAC = 0.004;
+/** At most this many holes are cut into one surface polygon. */
+const MAX_HOLES = 8;
+/** At most this many separate pieces are joined into one surface polygon. */
+const MAX_PIECES = 6;
+
+const minHolePx = (mask: Uint8Array, w: number, h: number): number => {
+  let area = 0;
+  for (let i = 0; i < w * h; i++) area += mask[i];
+  return Math.max(12, area * MIN_HOLE_FRAC);
+};
 
 // Clockwise on screen (y down), starting West.
 const DX = [-1, -1, 0, 1, 1, 1, 0, -1];
@@ -283,11 +343,48 @@ export function traceContour(mask: Uint8Array, w: number, h: number): { x: numbe
   return out;
 }
 
-/** Mask -> simplified normalized polygon (pixel centres). */
-export function maskToPolygon(mask: Uint8Array, w: number, h: number): NormalizedPoint[] {
+const signedArea = (pts: NormalizedPoint[]): number => {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    a += p.x * q.y - q.x * p.y;
+  }
+  return a / 2;
+};
+
+/**
+ * Splices `sub` into `ring` through the closest vertex pair (a zero-width
+ * bridge), so several rings stay one point list everywhere the app expects
+ * one. Wound opposite to `ring`, `sub` is a hole; wound the same way, it is a
+ * separate piece. Either renders correctly under the even-odd and the
+ * non-zero fill rule.
+ */
+function spliceRing(ring: NormalizedPoint[], sub: NormalizedPoint[]): NormalizedPoint[] {
+  let bi = 0, bj = 0, best = Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    for (let j = 0; j < sub.length; j++) {
+      const d = (ring[i].x - sub[j].x) ** 2 + (ring[i].y - sub[j].y) ** 2;
+      if (d < best) { best = d; bi = i; bj = j; }
+    }
+  }
+  return [
+    ...ring.slice(0, bi + 1),
+    ...sub.slice(bj),
+    ...sub.slice(0, bj + 1),
+    { ...ring[bi] },
+    ...ring.slice(bi + 1),
+  ];
+}
+
+const orient = (pts: NormalizedPoint[], sign: number): NormalizedPoint[] =>
+  Math.sign(signedArea(pts)) === sign ? pts : pts.slice().reverse();
+
+/** Outer ring of a single-component mask with its holes cut in, wound `sign`. */
+function pieceRing(mask: Uint8Array, w: number, h: number, sign: number): NormalizedPoint[] {
   const contour = traceContour(mask, w, h);
   if (contour.length < 3) return [];
-  const pts = contour.map((p) => ({ x: (p.x + 0.5) / w, y: (p.y + 0.5) / h }));
+  const toNorm = (p: { x: number; y: number }) => ({ x: (p.x + 0.5) / w, y: (p.y + 0.5) / h });
+  const pts = contour.map(toNorm);
   // Snap to the frame when touching the border so the material reaches the edge.
   for (const p of pts) {
     if (p.x <= 0.75 / w) p.x = 0;
@@ -295,7 +392,50 @@ export function maskToPolygon(mask: Uint8Array, w: number, h: number): Normalize
     if (p.y <= 0.75 / h) p.y = 0;
     if (p.y >= 1 - 0.75 / h) p.y = 1;
   }
-  return simplifyPolygon(pts, 0.0025, 200);
+  const outer = simplifyPolygon(pts, 0.0025, 200);
+  if (outer.length < 3) return [];
+  let ring = orient(outer, sign);
+
+  const { label, sizes } = labelHoles(mask, w, h);
+  const minHole = minHolePx(mask, w, h);
+  const holeIds = sizes
+    .map((size, id) => ({ id, size }))
+    .filter((hInfo) => hInfo.id > 0 && hInfo.size >= minHole)
+    .sort((a, b) => b.size - a.size)
+    .slice(0, MAX_HOLES);
+  for (const { id } of holeIds) {
+    const holeMask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) if (label[i] === id) holeMask[i] = 1;
+    const hole = simplifyPolygon(traceContour(holeMask, w, h).map(toNorm), 0.0025, 80);
+    if (hole.length < 3) continue;
+    ring = spliceRing(ring, orient(hole, -sign));
+  }
+  return ring;
+}
+
+/**
+ * Mask -> simplified normalized polygon (pixel centres). Separate pieces
+ * (e.g. floor on both sides of an island) are joined, and enclosed holes large
+ * enough to matter (e.g. a rug subtracted from a floor) are cut out; noise-
+ * sized pieces and holes are ignored.
+ */
+export function maskToPolygon(mask: Uint8Array, w: number, h: number): NormalizedPoint[] {
+  const { label, sizes } = labelComponents(mask, w, h);
+  const minPiece = minHolePx(mask, w, h);
+  const pieces = sizes
+    .map((size, id) => ({ id, size }))
+    .filter((pInfo) => pInfo.id > 0 && pInfo.size >= minPiece)
+    .sort((a, b) => b.size - a.size)
+    .slice(0, MAX_PIECES);
+  let ring: NormalizedPoint[] = [];
+  for (const { id } of pieces) {
+    const pieceMask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) if (label[i] === id) pieceMask[i] = 1;
+    const piece = pieceRing(pieceMask, w, h, 1);
+    if (piece.length < 3) continue;
+    ring = ring.length ? spliceRing(ring, piece) : piece;
+  }
+  return ring;
 }
 
 export type WandMode = 'replace' | 'add' | 'subtract';
@@ -311,10 +451,16 @@ export function combineMasks(prev: Uint8Array | null, next: Uint8Array, mode: Wa
 }
 
 /**
- * Subtracting must not have its hole re-filled, so only the closing + largest
- * blob is applied in that case.
+ * A fresh click selection is cleaned fully (holes filled: clicking a floor
+ * takes the rug with it). A combined mask keeps separate pieces and the holes
+ * a subtraction cut, so later additions do not refill them; only noise-sized
+ * pieces and holes are removed.
  */
-export function finalizeMask(mask: Uint8Array, w: number, h: number, mode: WandMode): Uint8Array {
-  if (mode === 'subtract') return largestComponent(mask, w, h);
-  return cleanMask(mask, w, h);
+export function finalizeMask(mask: Uint8Array, w: number, h: number, mode: WandMode, fresh = false): Uint8Array {
+  if (fresh || mode === 'replace') return cleanMask(mask, w, h);
+  // Adding: a closing bridges the thin edge line between neighbouring areas
+  // (wall + cabinet) so they merge without a seam. Subtracting keeps the cut crisp.
+  const base = mode === 'add' ? morph(morph(mask, w, h, 2, true), w, h, 2, false) : mask;
+  const minPx = minHolePx(base, w, h);
+  return fillHoles(dropSmallComponents(base, w, h, minPx), w, h, minPx);
 }
