@@ -7,7 +7,7 @@ import { pubMaterialName, publicApi, type PubVisualizerSurface } from '@/lib/pub
 import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
   ArrowLeft, Upload, ZoomIn, RotateCcw,
-  Heart, Download, Share2, Check, Camera, X, Sparkles,
+  Heart, Download, Share2, Check, Camera, X, Sparkles, Wand2,
 } from 'lucide-react';
 
 import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
@@ -31,6 +31,10 @@ import { downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
 import type { RoomLayout, Step, VisMaterial, NormalizedPoint, SurfaceKind } from '@/lib/visualizer/types';
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
+import {
+  prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon,
+  type WandImage, type WandMode,
+} from '@/lib/visualizer/magicWand';
 
 /** Mirrors the server defaults so the page still works before /config loads. */
 const FALLBACK_SURFACES: PubVisualizerSurface[] = [
@@ -173,6 +177,16 @@ export function VisualizerPage() {
   /** Coverage / waste readout for the current surface + piece size. */
   const [installStats, setInstallStats] = useState<ReturnType<typeof computeInstallStats> | null>(null);
 
+  // Smart "magic wand" selection: click any part of the photo to select it.
+  const [wandActive, setWandActive] = useState(false);
+  const [wandTarget, setWandTarget] = useState<string | null>(null);
+  const [wandMode, setWandMode] = useState<WandMode>('replace');
+  const [wandTolerance, setWandTolerance] = useState(14);
+  const [wandBusy, setWandBusy] = useState(false);
+  const [wandEmpty, setWandEmpty] = useState(false);
+  const wandImageRef = useRef<{ key: string; img: WandImage } | null>(null);
+  const wandMasksRef = useRef<Record<string, Uint8Array>>({});
+
   /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
   useEffect(() => {
     if (!uploadedImage || !uploadMode) return;
@@ -226,6 +240,14 @@ export function VisualizerPage() {
   // Preset rooms render at the configured box (their clip-paths were authored
   // for it); uploads keep the photo's own aspect.
   const displayAspect = uploadMode && imageAspect ? imageAspect : presetAspect;
+
+  // A new photo invalidates any magic-wand selection state.
+  useEffect(() => {
+    wandMasksRef.current = {};
+    wandImageRef.current = null;
+    setWandActive(false);
+    setWandEmpty(false);
+  }, [roomImage]);
 
   /** Maps a detected surfaceType to the active surface id (upload id or preset id). */
   const surfaceIdForType = (type: string): string | null => {
@@ -597,6 +619,55 @@ export function VisualizerPage() {
     return surface?.clipPath || 'polygon(0 0, 100% 0, 100% 100%, 0 100%)';
   };
 
+  /** Magic-wand click: grow a region of similar colour from the clicked point. */
+  const handleWandClick = async (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = wandTarget ?? surfaces[0]?.id;
+    if (!roomImage || !target || wandBusy) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const nx = (e.clientX - rect.left) / rect.width;
+    const ny = (e.clientY - rect.top) / rect.height;
+    if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return;
+    setWandBusy(true);
+    try {
+      const key = `${roomImage}|${displayAspect}`;
+      if (wandImageRef.current?.key !== key) {
+        const img = await loadImage(roomImage);
+        const prepared = prepareWandImage(img, displayAspect);
+        if (!prepared) return;
+        wandImageRef.current = { key, img: prepared };
+      }
+      const wi = wandImageRef.current.img;
+      const fresh = finalizeMask(
+        floodSelect(wi, nx, ny, { tolerance: wandTolerance, edgeThreshold: wandTolerance * 1.3 }),
+        wi.w, wi.h, 'replace',
+      );
+      const combined = finalizeMask(combineMasks(wandMasksRef.current[target] ?? null, fresh, wandMode), wi.w, wi.h, wandMode);
+      const poly = maskToPolygon(combined, wi.w, wi.h);
+      if (poly.length < 3) {
+        setWandEmpty(true);
+        return;
+      }
+      setWandEmpty(false);
+      wandMasksRef.current[target] = combined;
+      setAiSegments((prev) => ({ ...prev, [target]: poly }));
+    } catch {
+      setWandEmpty(true);
+    } finally {
+      setWandBusy(false);
+    }
+  };
+
+  const clearWandSelection = () => {
+    const target = wandTarget ?? surfaces[0]?.id;
+    if (!target) return;
+    delete wandMasksRef.current[target];
+    setAiSegments((prev) => {
+      const next = { ...prev };
+      delete next[target];
+      return next;
+    });
+  };
+
   const uploadSurfaces = surfacesConfig.map((s) => ({ id: s.id, name: s.nameEn, nameAr: s.nameAr }));
 
   const surfaces = uploadMode
@@ -792,6 +863,19 @@ export function VisualizerPage() {
                 onSegments={handleAISegments}
               />
             )}
+            {allowManualAreaEdit && (
+              <button
+                onClick={() => {
+                  setWandActive((v) => !v);
+                  setEditingSurfaceId(null);
+                  setWandTarget((cur) => cur ?? selectedSurfaceId ?? surfaces[0]?.id ?? null);
+                }}
+                aria-pressed={wandActive}
+                className={`flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 transition-colors ${wandActive ? 'bg-stone-900 text-ivory' : 'text-stone-900 hover:bg-stone-900 hover:text-ivory'}`}
+              >
+                <Wand2 size={13} strokeWidth={1.5} /> {t('smartSelect')}
+              </button>
+            )}
             {uploadMode && allowManualAreaEdit && editingSurfaceId && (
               <button
                 onClick={() => setEditingSurfaceId(null)}
@@ -812,13 +896,110 @@ export function VisualizerPage() {
             <p className="text-xs text-stone-500 mb-6">{t('aiAutoHint')}</p>
           )}
 
-          {editingSurfaceId && uploadMode ? (
+          {wandActive ? (
+            <div className="mb-6 border border-stone-300 bg-stone-100 p-3">
+              <p className="text-xs text-stone-500 mb-3">{t('smartSelectHint')}</p>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-3 mb-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] tracking-[0.15em] uppercase text-stone-500">{t('wandTarget')}</span>
+                  {surfaces.map((surface) => {
+                    const active = (wandTarget ?? surfaces[0]?.id) === surface.id;
+                    return (
+                      <button
+                        key={surface.id}
+                        onClick={() => setWandTarget(surface.id)}
+                        aria-pressed={active}
+                        className={`text-xs px-3 py-1.5 border transition-colors ${active ? 'border-stone-900 bg-stone-900 text-ivory' : 'border-stone-300 text-stone-700 hover:border-stone-900'}`}
+                      >
+                        {lang === 'ar' ? (surface.nameAr || t(surface.id === 'floor' ? 'floor' : surface.id === 'wall' ? 'wall' : 'countertop')) : surface.nameEn}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center border border-stone-300" role="group">
+                  {(['replace', 'add', 'subtract'] as WandMode[]).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setWandMode(m)}
+                      aria-pressed={wandMode === m}
+                      className={`text-xs px-3 py-1.5 transition-colors ${wandMode === m ? 'bg-stone-900 text-ivory' : 'text-stone-700 hover:bg-stone-200'}`}
+                    >
+                      {t(m === 'replace' ? 'wandNew' : m === 'add' ? 'wandAdd' : 'wandSubtract')}
+                    </button>
+                  ))}
+                </div>
+                <label className="flex items-center gap-2 text-[11px] tracking-[0.15em] uppercase text-stone-500">
+                  {t('wandTolerance')}
+                  <input
+                    type="range"
+                    min={4}
+                    max={40}
+                    step={1}
+                    value={wandTolerance}
+                    onChange={(e) => setWandTolerance(Number(e.target.value))}
+                    className="w-28 accent-stone-900"
+                  />
+                </label>
+              </div>
+              <div
+                className={`relative overflow-hidden bg-stone-200 select-none ${wandBusy ? 'cursor-wait' : 'cursor-crosshair'}`}
+                style={{ aspectRatio: `${displayAspect}` }}
+                onClick={(e) => { void handleWandClick(e); }}
+              >
+                <img src={roomImage} alt="Room" className="w-full h-full object-cover pointer-events-none" draggable={false} />
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none">
+                  {surfaces.map((surface) => {
+                    const pts = aiSegments[surface.id];
+                    if (!pts || pts.length < 3) return null;
+                    const active = (wandTarget ?? surfaces[0]?.id) === surface.id;
+                    return (
+                      <polygon
+                        key={surface.id}
+                        points={pts.map((p) => `${(p.x * 100).toFixed(2)},${(p.y * 100).toFixed(2)}`).join(' ')}
+                        fill={active ? 'rgba(194,65,12,0.35)' : 'rgba(255,255,255,0.18)'}
+                        stroke={active ? '#c2410c' : 'rgba(255,255,255,0.7)'}
+                        strokeWidth={active ? 0.4 : 0.25}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    );
+                  })}
+                </svg>
+                {wandBusy && (
+                  <span className="absolute top-3 end-3 inline-block h-4 w-4 rounded-full border-2 border-white/60 border-t-white animate-spin" />
+                )}
+              </div>
+              {wandEmpty && <p className="text-xs text-red-700 mt-2">{t('wandEmpty')}</p>}
+              <div className="flex flex-wrap gap-3 mt-3">
+                <button
+                  onClick={clearWandSelection}
+                  className="flex items-center gap-1.5 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900"
+                >
+                  <RotateCcw size={13} strokeWidth={1.5} /> {t('wandClear')}
+                </button>
+                <button
+                  onClick={() => {
+                    const target = wandTarget ?? surfaces[0]?.id;
+                    if (!target) return;
+                    setWandActive(false);
+                    selectSurface(target);
+                  }}
+                  disabled={!(aiSegments[wandTarget ?? surfaces[0]?.id ?? '']?.length)}
+                  className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 bg-stone-900 text-ivory hover:bg-stone-800 disabled:opacity-40"
+                >
+                  <Check size={13} strokeWidth={1.5} /> {t('wandUse')}
+                </button>
+              </div>
+            </div>
+          ) : editingSurfaceId && uploadMode ? (
             <div className="mb-6 border border-stone-300 bg-stone-100 p-3">
               <p className="text-xs tracking-[0.15em] uppercase text-stone-500 mb-3">{t('adjustAreaHint')}</p>
               <PolygonEditor
                 imageUrl={roomImage}
                 points={aiSegments[editingSurfaceId] ?? defaultUploadPolygon[editingSurfaceId] ?? []}
-                onChange={(pts) => setAiSegments((prev) => ({ ...prev, [editingSurfaceId]: pts }))}
+                onChange={(pts) => {
+                  delete wandMasksRef.current[editingSurfaceId];
+                  setAiSegments((prev) => ({ ...prev, [editingSurfaceId]: pts }));
+                }}
               />
             </div>
           ) : (
