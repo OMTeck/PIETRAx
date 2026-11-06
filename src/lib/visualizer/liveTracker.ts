@@ -33,11 +33,19 @@ export class LiveTracker {
     this.centroid = null;
   }
 
-  track(rgba: Uint8ClampedArray, seed: { x: number; y: number }, tolerance: number): TrackResult | null {
+  /**
+   * @param allowed optional w×h mask of pixels that may belong to the surface
+   *   (for floors with gyroscope geometry: below the horizon), so the region
+   *   cannot leak up a wall of similar colour.
+   */
+  track(rgba: Uint8ClampedArray, seed: { x: number; y: number }, tolerance: number, allowed?: Uint8Array | null): TrackResult | null {
     const { w, h } = this;
     const img = wandImageFromRgba(rgba, w, h);
-    const grow = (x: number, y: number) =>
-      finalizeMask(floodSelect(img, x, y, { tolerance, edgeThreshold: tolerance * 1.3 }), w, h, 'replace', true);
+    const grow = (x: number, y: number) => {
+      const raw = floodSelect(img, x, y, { tolerance, edgeThreshold: tolerance * 1.3 });
+      if (allowed) for (let i = 0; i < raw.length; i++) raw[i] &= allowed[i];
+      return finalizeMask(raw, w, h, 'replace', true);
+    };
 
     let mask = grow(seed.x, seed.y);
     if (this.prev && this.centroid) {

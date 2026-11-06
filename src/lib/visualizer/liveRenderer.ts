@@ -11,8 +11,29 @@
 
 export type LiveSurfaceKind = 'floor' | 'wall';
 
+/**
+ * Real camera geometry from the gyroscope: camera-to-world rotation (world y
+ * up), so the stone lies on a true ground plane (or a fixed wall plane) at
+ * real size, and turning the phone does not move the tiles.
+ */
+export interface LiveGeometry {
+  /** Column-major 3×3 rotation, camera (x right, y up, looks −z) -> world (y up). */
+  camToWorld: Float32Array;
+  /** tan(half vertical FOV) of the displayed (cover-cropped) view. */
+  tanV: number;
+  /** Camera height above the floor, metres. */
+  camHeight: number;
+  /** Wall: unit horizontal normal pointing from the camera to the wall, and distance (m). */
+  wallN: [number, number, number];
+  wallD: number;
+  /** One piece in metres. */
+  tileM: [number, number];
+}
+
 export interface LiveDrawParams {
   kind: LiveSurfaceKind;
+  /** When set, the physically based projection is used instead of the estimated horizon. */
+  geometry?: LiveGeometry | null;
   /** Screen y (0 top .. 1 bottom) of the estimated horizon (floors). */
   horizon: number;
   /** Tile size multiplier (1 = default). */
@@ -47,6 +68,13 @@ uniform float uLumaMean;
 uniform float uLight;
 uniform vec3 uTexAvg;
 uniform float uHasMask;
+uniform int uGeo;         // 1 = gyroscope geometry
+uniform mat3 uCamToWorld;
+uniform float uTanV;
+uniform float uCamH;
+uniform vec3 uWallN;
+uniform float uWallD;
+uniform vec2 uTileM;
 
 void main() {
   vec2 vuv = (vS - 0.5) * uCover + 0.5;
@@ -56,6 +84,32 @@ void main() {
 
   vec2 uv;
   float far = 0.0;
+  if (uGeo == 1) {
+    vec3 rc = vec3((vS.x - 0.5) * 2.0 * uTanV * uAspect, -(vS.y - 0.5) * 2.0 * uTanV, -1.0);
+    vec3 rw = uCamToWorld * rc;
+    float t;
+    vec3 P;
+    if (uKind == 0) {
+      if (rw.y > -0.0005) { gl_FragColor = vec4(cam, 1.0); return; }
+      t = uCamH / -rw.y;
+      P = t * rw;
+      uv = P.xz / uTileM;
+    } else {
+      float d = dot(rw, uWallN);
+      if (d < 0.0005) { gl_FragColor = vec4(cam, 1.0); return; }
+      t = uWallD / d;
+      P = t * rw;
+      vec3 lat = normalize(cross(vec3(0.0, 1.0, 0.0), uWallN));
+      uv = vec2(dot(P, lat), -P.y) / uTileM;
+    }
+    far = smoothstep(7.0, 14.0, t);
+    vec3 stoneG = texture2D(uTex, fract(uv)).rgb;
+    stoneG = mix(stoneG, uTexAvg, far);
+    float lumaG = dot(cam, vec3(0.299, 0.587, 0.114));
+    float ratioG = clamp(lumaG / max(uLumaMean, 0.04), 0.35, 1.6);
+    gl_FragColor = vec4(mix(cam, stoneG * mix(1.0, ratioG, uLight), m), 1.0);
+    return;
+  }
   if (uKind == 0) {
     float dy = max(vS.y - uHorizon, 0.012);
     float depth = 1.0 / dy;
@@ -128,7 +182,8 @@ export class LiveRenderer {
     gl.enableVertexAttribArray(aPos);
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
-    for (const n of ['uVideo', 'uMask', 'uTex', 'uCover', 'uAspect', 'uTexAspect', 'uKind', 'uHorizon', 'uScale', 'uLumaMean', 'uLight', 'uTexAvg', 'uHasMask']) {
+    for (const n of ['uVideo', 'uMask', 'uTex', 'uCover', 'uAspect', 'uTexAspect', 'uKind', 'uHorizon', 'uScale', 'uLumaMean', 'uLight', 'uTexAvg', 'uHasMask',
+      'uGeo', 'uCamToWorld', 'uTanV', 'uCamH', 'uWallN', 'uWallD', 'uTileM']) {
       this.loc[n] = gl.getUniformLocation(prog, n);
     }
     this.videoTex = makeTexture(gl);
@@ -201,7 +256,25 @@ export class LiveRenderer {
     gl.uniform1f(this.loc.uLight, p.lightStrength);
     gl.uniform3f(this.loc.uTexAvg, this.texAvg[0], this.texAvg[1], this.texAvg[2]);
     gl.uniform1f(this.loc.uHasMask, this.hasMask && this.hasMaterial ? 1 : 0);
+    const g = p.geometry;
+    gl.uniform1i(this.loc.uGeo, g ? 1 : 0);
+    if (g) {
+      gl.uniformMatrix3fv(this.loc.uCamToWorld, false, g.camToWorld);
+      gl.uniform1f(this.loc.uTanV, g.tanV);
+      gl.uniform1f(this.loc.uCamH, g.camHeight);
+      gl.uniform3f(this.loc.uWallN, g.wallN[0], g.wallN[1], g.wallN[2]);
+      gl.uniform1f(this.loc.uWallD, g.wallD);
+      // One texture repeat = one piece (tileM), whatever the image's own proportions.
+      gl.uniform2f(this.loc.uTileM, g.tileM[0], g.tileM[1]);
+    }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  /** Cover scale of the video in the canvas (fraction of video width/height shown). */
+  coverFor(video: HTMLVideoElement): [number, number] {
+    const ac = this.canvas.width / this.canvas.height;
+    const av = (video.videoWidth || 1) / (video.videoHeight || 1);
+    return ac > av ? [1, av / ac] : [ac / av, 1];
   }
 
   dispose(): void {

@@ -36,6 +36,7 @@ import { renderSurfaceTextureAsync } from '@/lib/visualizer/textureRenderClient'
 import { LiveCamera, type LiveCapture } from '@/components/visualizer/LiveCamera';
 import { ArMode } from '@/components/visualizer/ArMode';
 import { isArSupported } from '@/lib/visualizer/arSession';
+import { requestOrientationPermission } from '@/lib/visualizer/liveOrientation';
 import {
   prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon, polygonToMask,
   type WandImage, type WandMode,
@@ -1083,13 +1084,13 @@ export function VisualizerPage() {
               />
             )}
             {allowLiveCamera && arSupported && (
-              <button onClick={() => setLiveOpen(true)} className="mb-8 text-xs tracking-wider uppercase text-stone-500 underline hover:text-stone-900">
+              <button onClick={() => { void requestOrientationPermission(); setLiveOpen(true); }} className="mb-8 text-xs tracking-wider uppercase text-stone-500 underline hover:text-stone-900">
                 {t('vzLiveSimple')}
               </button>
             )}
             {allowLiveCamera && !arSupported && (
               <button
-                onClick={() => setLiveOpen(true)}
+                onClick={() => { void requestOrientationPermission(); setLiveOpen(true); }}
                 className="-mt-4 mb-8 flex w-full items-center gap-4 border-2 border-stone-900 bg-stone-900 p-5 text-start text-ivory transition-colors hover:bg-stone-800 md:p-6"
               >
                 <Video size={28} strokeWidth={1.5} className="shrink-0" />
