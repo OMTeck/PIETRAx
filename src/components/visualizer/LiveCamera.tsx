@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Camera, Download, Hand } from 'lucide-react';
 import type { NormalizedPoint, VisMaterial } from '@/lib/visualizer/types';
-import { loadImage } from '@/lib/visualizer/textureMapper';
+import { loadImage, paramsFromMaterial } from '@/lib/visualizer/textureMapper';
+import { camToWorld, displayedTanV, floorPoint, horizontalDir, project, rayAt, type Vec3 } from '@/lib/visualizer/liveOrientation';
 import { maskToPolygon } from '@/lib/visualizer/magicWand';
 import { LiveRenderer, drawCover, type LiveSurfaceKind } from '@/lib/visualizer/liveRenderer';
 import { LiveTracker } from '@/lib/visualizer/liveTracker';
@@ -15,6 +16,10 @@ const ANALYSIS_W = 160;
 const ANALYSIS_INTERVAL_MS = 70;
 /** Long edge of a captured frame handed to the normal flow. */
 const CAPTURE_MAX = 1600;
+/** Assumed phone height above the floor (chest height), metres. */
+const CAM_HEIGHT_M = 1.4;
+/** Assumed distance to a tapped wall, metres. */
+const WALL_DIST_M = 2.5;
 
 export interface LiveCapture {
   image: string;
@@ -47,6 +52,11 @@ export function LiveCamera({ materials, initialMaterialId, t, onClose, onCapture
   const seedRef = useRef<{ x: number; y: number } | null>(null);
   const lastBinaryRef = useRef<{ mask: Uint8Array; w: number; h: number } | null>(null);
   const stateRef = useRef({ horizon: 0.35, lumaMean: 0.5, lastAnalysis: 0 });
+  /** Latest phone orientation (null until the sensor reports). */
+  const orientRef = useRef<{ a: number; b: number; g: number } | null>(null);
+  /** The tapped spot fixed in the world (gyro mode): re-projected every frame. */
+  const anchorRef = useRef<{ floor: Vec3 | null; wallN: Vec3 | null }>({ floor: null, wallN: null });
+  const allowedRef = useRef<Uint8Array | null>(null);
 
   const [status, setStatus] = useState<'starting' | 'live' | 'error' | 'unsupported'>('starting');
   const [materialId, setMaterialId] = useState<string | null>(initialMaterialId ?? materials[0]?.id ?? null);
@@ -55,6 +65,15 @@ export function LiveCamera({ materials, initialMaterialId, t, onClose, onCapture
   const [tolerance, setTolerance] = useState(14);
   const [hasSeed, setHasSeed] = useState(false);
   const [lost, setLost] = useState(false);
+
+  /** Real piece size of the selected material, metres. */
+  const tileMRef = useRef<[number, number]>([0.6, 0.6]);
+  useEffect(() => {
+    const m = materials.find((x) => x.id === materialId);
+    if (!m) return;
+    const p = paramsFromMaterial(m, 'realistic');
+    tileMRef.current = [Math.max(0.05, p.tileWidthCm / 100), Math.max(0.05, p.tileHeightCm / 100)];
+  }, [materialId, materials]);
 
   // Values the render loop reads without restarting.
   const liveParams = useRef({ kind, tileScale, tolerance });
@@ -134,6 +153,29 @@ export function LiveCamera({ materials, initialMaterialId, t, onClose, onCapture
     };
   }, [fitCanvas, stopAll]);
 
+  // Phone orientation -> real camera geometry (true perspective, anchored tiles).
+  useEffect(() => {
+    const onOrient = (e: DeviceOrientationEvent) => {
+      if (e.beta === null || e.gamma === null) return;
+      orientRef.current = { a: e.alpha ?? 0, b: e.beta, g: e.gamma };
+    };
+    window.addEventListener('deviceorientation', onOrient);
+    return () => window.removeEventListener('deviceorientation', onOrient);
+  }, []);
+
+  /** Camera geometry for this frame, or null without orientation data. */
+  const geometryFor = (video: HTMLVideoElement, canvas: HTMLCanvasElement) => {
+    const o = orientRef.current;
+    if (!o) return null;
+    const angle = (screen.orientation?.angle ?? (window as unknown as { orientation?: number }).orientation ?? 0) as number;
+    const R = camToWorld(o.a, o.b, o.g, angle);
+    const aspect = canvas.width / canvas.height;
+    const av = (video.videoWidth || 1) / (video.videoHeight || 1);
+    const coverY = aspect > av ? av / aspect : 1;
+    const tanV = displayedTanV(video.videoWidth, video.videoHeight, coverY);
+    return { R, aspect, tanV };
+  };
+
   // Load the selected material into the renderer.
   useEffect(() => {
     if (status !== 'live') return;
@@ -157,11 +199,35 @@ export function LiveCamera({ materials, initialMaterialId, t, onClose, onCapture
         const seed = seedRef.current;
         const a = analysisRef.current;
         const tracker = trackerRef.current;
+        const canvas = canvasRef.current;
+        const geo = canvas ? geometryFor(video, canvas) : null;
         if (seed && a && tracker && now - st.lastAnalysis >= ANALYSIS_INTERVAL_MS) {
           st.lastAnalysis = now;
           drawCover(a.ctx, video, a.canvas.width, a.canvas.height);
           const rgba = a.ctx.getImageData(0, 0, a.canvas.width, a.canvas.height).data;
-          const res = tracker.track(rgba, seed, liveParams.current.tolerance);
+          let trackSeed = seed;
+          let allowed: Uint8Array | null = null;
+          if (geo) {
+            const anchor = anchorRef.current;
+            // Follow the same spot on the floor as the phone turns.
+            if (liveParams.current.kind === 'floor' && anchor.floor) {
+              const sp = project(geo.R, anchor.floor, geo.tanV, geo.aspect);
+              if (sp && sp.x > 0.02 && sp.x < 0.98 && sp.y > 0.02 && sp.y < 0.98) trackSeed = sp;
+            }
+            // Floors cannot be above the horizon.
+            if (liveParams.current.kind === 'floor') {
+              const w = tracker.w, h = tracker.h;
+              if (!allowedRef.current || allowedRef.current.length !== w * h) allowedRef.current = new Uint8Array(w * h);
+              allowed = allowedRef.current;
+              for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                  const r = rayAt(geo.R, (x + 0.5) / w, (y + 0.5) / h, geo.tanV, geo.aspect);
+                  allowed[y * w + x] = r[1] < -0.03 ? 1 : 0;
+                }
+              }
+            }
+          }
+          const res = tracker.track(rgba, trackSeed, liveParams.current.tolerance, allowed);
           if (res) {
             renderer.setMask(res.soft, tracker.w, tracker.h);
             if (res.coverage > 0) {
@@ -176,7 +242,19 @@ export function LiveCamera({ materials, initialMaterialId, t, onClose, onCapture
           }
         }
         const p = liveParams.current;
-        renderer.draw(video, { kind: p.kind, horizon: st.horizon, tileScale: p.tileScale, lumaMean: st.lumaMean, lightStrength: 0.85 });
+        const anchor = anchorRef.current;
+        const tile = tileMRef.current;
+        const geometry = geo
+          ? {
+            camToWorld: geo.R,
+            tanV: geo.tanV,
+            camHeight: CAM_HEIGHT_M,
+            wallN: (anchor.wallN ?? [0, 0, -1]) as [number, number, number],
+            wallD: WALL_DIST_M,
+            tileM: [tile[0] * p.tileScale, tile[1] * p.tileScale] as [number, number],
+          }
+          : null;
+        renderer.draw(video, { kind: p.kind, geometry, horizon: st.horizon, tileScale: p.tileScale, lumaMean: st.lumaMean, lightStrength: 0.85 });
       }
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -192,6 +270,16 @@ export function LiveCamera({ materials, initialMaterialId, t, onClose, onCapture
     };
     trackerRef.current?.reset();
     stateRef.current.lastAnalysis = 0;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const geo = video && canvas ? geometryFor(video, canvas) : null;
+    const sd = seedRef.current;
+    anchorRef.current = geo && sd
+      ? {
+        floor: floorPoint(geo.R, sd.x, sd.y, geo.tanV, geo.aspect, CAM_HEIGHT_M),
+        wallN: horizontalDir(geo.R, sd.x, sd.y, geo.tanV, geo.aspect),
+      }
+      : { floor: null, wallN: null };
     setHasSeed(true);
     setLost(false);
   };
