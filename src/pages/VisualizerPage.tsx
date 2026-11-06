@@ -8,7 +8,7 @@ import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
   ArrowLeft, Upload, ZoomIn, RotateCcw,
   Heart, Download, Share2, Check, Camera, X, Sparkles, Wand2,
-  ZoomOut, Columns2, ChevronsLeftRight,
+  ZoomOut, Columns2, ChevronsLeftRight, Pin, PinOff,
 } from 'lucide-react';
 
 import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
@@ -151,6 +151,9 @@ export function VisualizerPage() {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [exportError, setExportError] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  /** A pinned result (another material) the compare slider shows instead of the photo. */
+  const [pinned, setPinned] = useState<{ url: string; name: string; key: string } | null>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
   const [zoomOrigin, setZoomOrigin] = useState({ x: 50, y: 50 });
   const [savedAdded, setSavedAdded] = useState(true);
   const savedTimerRef = useRef<number | null>(null);
@@ -241,7 +244,8 @@ export function VisualizerPage() {
 
   const filteredMaterials = useMemo(() => {
     return visMaterials.filter((m) => {
-      if (searchQuery && !m.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      const q = searchQuery.trim().toLowerCase();
+      if (q && ![m.name, m.enName, m.slug.replace(/-/g, ' '), m.typeLabel, m.colourLabel].some((v) => (v || '').toLowerCase().includes(q))) return false;
       if (filterCategory !== 'All' && m.typeCode !== filterCategory) return false;
       return true;
     });
@@ -581,6 +585,7 @@ export function VisualizerPage() {
           surfaceHeightM: measured.heightM,
           pieceWidthM: pieceW,
           pieceHeightM: pieceH,
+          coverage: measured.coverage,
         }));
       } else {
         setInstallStats(null);
@@ -687,6 +692,42 @@ export function VisualizerPage() {
 
   /** What the result step shows: the AI image when present, else the engine composite. */
   const resultImageUrl = aiResultUrl ?? compositeUrl;
+  /** A pin belongs to one photo + surface; it is dropped when either changes. */
+  const pinScope = `${roomImage ?? ''}|${selectedSurfaceId ?? ''}`;
+  const activePin = pinned && pinned.key === pinScope && selectedMaterial && pinned.name !== selectedMaterial.name ? pinned : null;
+
+  /** Switch material in place (result step strip, arrow keys). */
+  const switchMaterial = (delta: number) => {
+    if (!visMaterials.length) return;
+    const i = visMaterials.findIndex((m) => m.id === selectedMaterialId);
+    const next = visMaterials[(i + delta + visMaterials.length) % visMaterials.length];
+    setSelectedMaterialId(next.id);
+  };
+  const switchMaterialRef = useRef(switchMaterial);
+  switchMaterialRef.current = switchMaterial;
+
+  // ← / → switch material on the result step (visual order, so RTL is respected).
+  useEffect(() => {
+    if (step !== 'result') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName))) return;
+      const rtl = document.documentElement.dir === 'rtl';
+      const forward = e.key === 'ArrowRight' ? !rtl : rtl;
+      e.preventDefault();
+      switchMaterialRef.current(forward ? 1 : -1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [step]);
+
+  // Keep the active thumbnail in view in the quick-switch strip.
+  useEffect(() => {
+    if (step !== 'result' || !selectedMaterialId) return;
+    const el = stripRef.current?.querySelector<HTMLElement>(`[data-mat="${selectedMaterialId}"]`);
+    el?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+  }, [step, selectedMaterialId]);
 
   /** Back to step 1 with a clean slate (photo, selection, masks, scale, view). */
   const startOver = () => {
@@ -716,6 +757,7 @@ export function VisualizerPage() {
     setCompareSplit(0.5);
     setCalibPxPerMeter(null);
     setInstallStats(null);
+    setPinned(null);
     setZoom(1);
     analyzedRef.current = null;
   };
@@ -846,6 +888,20 @@ export function VisualizerPage() {
 
   const steps: Step[] = ['room', 'surface', 'material', 'result'];
   const currentStepIndex = steps.indexOf(step);
+  /** Completed steps are links back; forward only when its inputs exist. */
+  const canGoToStep = (s: Step, i: number): boolean => {
+    if (i === currentStepIndex) return false;
+    if (s === 'room') return true;
+    if (s === 'surface') return Boolean(roomImage);
+    if (s === 'material') return Boolean(roomImage && (selectedSurfaceId || uploadMode));
+    return Boolean(roomImage && selectedMaterial && (selectedSurfaceId || uploadMode));
+  };
+  const goToStep = (s: Step) => {
+    setShowOriginal(false);
+    setWandActive(false);
+    setEditingSurfaceId(null);
+    setStep(s);
+  };
 
   return (
     <div className="pt-20 md:pt-24 min-h-screen bg-stone-100">
@@ -862,7 +918,14 @@ export function VisualizerPage() {
         <div className="flex items-center gap-2 md:gap-4">
           {steps.map((s, i) => (
             <div key={s} className="flex items-center gap-2 md:gap-4">
-              <div className={`flex items-center gap-2 ${i <= currentStepIndex ? 'text-stone-900' : 'text-stone-400'}`}>
+              <button
+                type="button"
+                disabled={!canGoToStep(s, i)}
+                onClick={() => goToStep(s)}
+                aria-current={i === currentStepIndex ? 'step' : undefined}
+                aria-label={`${t('vzGoToStep')} ${i + 1}`}
+                className={`flex items-center gap-2 disabled:cursor-default ${i <= currentStepIndex ? 'text-stone-900' : 'text-stone-400'} ${canGoToStep(s, i) ? 'hover:opacity-70' : ''}`}
+              >
                 <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs border transition-all ${
                   i === currentStepIndex ? 'bg-stone-900 text-ivory border-stone-900' :
                   i < currentStepIndex ? 'bg-stone-200 text-stone-900 border-stone-200' :
@@ -873,7 +936,7 @@ export function VisualizerPage() {
                 <span className="text-xs tracking-[0.15em] uppercase hidden md:inline">
                   {s === 'room' ? t('chooseRoom') : s === 'surface' ? t('chooseSurface') : s === 'material' ? t('chooseMaterial') : t('applyMaterial')}
                 </span>
-              </div>
+              </button>
               {i < steps.length - 1 && <div className={`w-8 md:w-16 h-px ${i < currentStepIndex ? 'bg-stone-900' : 'bg-stone-300'}`} />}
             </div>
           ))}
@@ -1214,6 +1277,9 @@ export function VisualizerPage() {
 
           {/* Material Grid */}
           <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-6 gap-3 md:gap-4 max-h-[500px] overflow-y-auto">
+            {filteredMaterials.length === 0 && (
+              <p className="col-span-full py-10 text-center text-sm text-stone-500">{t('vzMaterialsEmpty')}</p>
+            )}
             {filteredMaterials.map((m) => (
               <button
                 key={m.id}
@@ -1278,6 +1344,29 @@ export function VisualizerPage() {
                   {showCompare ? t('vzHideCompare') : `${t('before')} / ${t('after')}`}
                 </button>
               )}
+              {allowCompare && selectedMaterial && (
+                pinned && pinned.key === pinScope ? (
+                  <button
+                    onClick={() => setPinned(null)}
+                    className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 hover:bg-stone-900 hover:text-ivory transition-colors"
+                  >
+                    <PinOff size={13} strokeWidth={1.5} /> {t('vzUnpin')}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      if (!resultImageUrl) return;
+                      setPinned({ url: resultImageUrl, name: selectedMaterial.name, key: pinScope });
+                      setShowCompare(true);
+                      setShowOriginal(false);
+                    }}
+                    disabled={!resultImageUrl || aiApplying}
+                    className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors disabled:opacity-40"
+                  >
+                    <Pin size={13} strokeWidth={1.5} /> {t('vzPinCompare')}
+                  </button>
+                )
+              )}
               {aiResultUrl && (
                 <button onClick={() => { setAiResultUrl(null); setShowCompare(false); }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 hover:bg-stone-900 hover:text-ivory transition-colors">
                   <Check size={13} strokeWidth={1.5} /> {t('vzPreciseRender')}
@@ -1314,7 +1403,7 @@ export function VisualizerPage() {
                 revealed on the start side of the handle. */}
             {!showOriginal && showCompare && resultImageUrl && roomImage && (
               <img
-                src={roomImage}
+                src={activePin?.url ?? roomImage}
                 alt="Before"
                 className="absolute inset-0 w-full h-full object-cover"
                 style={{ clipPath: `polygon(0 0, ${compareSplit * 100}% 0, ${compareSplit * 100}% 100%, 0 100%)` }}
@@ -1353,8 +1442,8 @@ export function VisualizerPage() {
                     className="absolute inset-0 h-full w-full cursor-ew-resize opacity-0"
                     style={{ touchAction: 'pan-y' }}
                   />
-                  <span className="pointer-events-none absolute top-3 left-3 text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">{t('before')}</span>
-                  <span className="pointer-events-none absolute top-3 right-3 text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">{t('after')}</span>
+                  <span className="pointer-events-none absolute top-3 left-3 max-w-[45%] truncate text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">{activePin ? activePin.name : t('before')}</span>
+                  <span className="pointer-events-none absolute top-3 right-3 max-w-[45%] truncate text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">{activePin ? selectedMaterial?.name : t('after')}</span>
                 </div>
               )}
               {/* Labels */}
@@ -1378,6 +1467,41 @@ export function VisualizerPage() {
               )}
             </div>
           </div>
+
+          {/* Quick material switch: try materials without leaving the result */}
+          {visMaterials.length > 1 && (
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between gap-3 text-[11px] tracking-[0.15em] uppercase text-stone-500">
+                <span>{t('vzQuickSwitch')}</span>
+                <span className="hidden md:inline normal-case tracking-normal text-stone-400">
+                  {pinned && pinned.key === pinScope && !activePin
+                    ? t('vzPinnedHint').replace('{name}', pinned.name)
+                    : t('vzKeyboardHint')}
+                </span>
+              </div>
+              <div ref={stripRef} className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide" role="listbox" aria-label={t('vzQuickSwitch')}>
+                {visMaterials.map((m) => {
+                  const active = m.id === selectedMaterialId;
+                  return (
+                    <button
+                      key={m.id}
+                      data-mat={m.id}
+                      role="option"
+                      aria-selected={active}
+                      title={m.name}
+                      onClick={() => setSelectedMaterialId(m.id)}
+                      className={`relative shrink-0 h-16 w-16 md:h-20 md:w-20 overflow-hidden border-2 transition-all ${active ? 'border-stone-900' : 'border-transparent opacity-80 hover:opacity-100 hover:border-stone-300'}`}
+                    >
+                      <img src={m.textureUrl} alt={m.name} loading="lazy" className="h-full w-full object-cover" draggable={false} />
+                      {pinned && pinned.key === pinScope && pinned.name === m.name && (
+                        <span className="absolute top-1 end-1 rounded-full bg-stone-900 p-0.5 text-ivory"><Pin size={10} strokeWidth={2} /></span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {renderError && (
             <p className="mt-3 flex items-center gap-3 text-xs text-red-700">
