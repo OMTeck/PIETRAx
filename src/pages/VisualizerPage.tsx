@@ -32,6 +32,7 @@ import { downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
 import type { RoomLayout, Step, VisMaterial, NormalizedPoint, SurfaceKind } from '@/lib/visualizer/types';
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
+import { thumbUrl } from '@/lib/visualizer/thumb';
 import {
   prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon,
   type WandImage, type WandMode,
@@ -1007,7 +1008,7 @@ export function VisualizerPage() {
                   className="group relative block w-full overflow-hidden"
                 >
                   <LazyImage
-                    src={room.previewImage ?? ''}
+                    src={thumbUrl(room.previewImage ?? '', 480)}
                     alt={lang === 'ar' ? room.nameAr : room.nameEn}
                     aspectClass="aspect-[4/3]"
                     className="transition-transform duration-500 group-hover:scale-105"
@@ -1189,8 +1190,8 @@ export function VisualizerPage() {
             </div>
           ) : (
             <div
-              className="relative aspect-[16/10] overflow-hidden bg-stone-200 mb-6"
-              style={uploadMode && imageAspect ? { aspectRatio: `${imageAspect}` } : undefined}
+              className="relative overflow-hidden bg-stone-200 mb-6"
+              style={{ aspectRatio: `${displayAspect}` }}
             >
               <img src={roomImage} alt="Room" className="w-full h-full object-cover" />
               {surfaces.map((surface) => {
@@ -1291,7 +1292,7 @@ export function VisualizerPage() {
                   selectedMaterialId === m.id ? 'border-stone-900' : 'border-transparent hover:border-stone-300'
                 }`}
               >
-                <LazyImage src={m.textureUrl} alt={m.name} aspectClass="aspect-square" className="transition-transform duration-300 group-hover:scale-110" />
+                <LazyImage src={thumbUrl(m.textureUrl, 240)} alt={m.name} aspectClass="aspect-square" className="transition-transform duration-300 group-hover:scale-110" />
                 <div className="absolute bottom-0 left-0 right-0 p-2 bg-stone-950/60">
                   <p className="text-white text-xs font-light truncate">{m.name}</p>
                 </div>
@@ -1492,7 +1493,7 @@ export function VisualizerPage() {
                       onClick={() => setSelectedMaterialId(m.id)}
                       className={`relative shrink-0 h-16 w-16 md:h-20 md:w-20 overflow-hidden border-2 transition-all ${active ? 'border-stone-900' : 'border-transparent opacity-80 hover:opacity-100 hover:border-stone-300'}`}
                     >
-                      <img src={m.textureUrl} alt={m.name} loading="lazy" className="h-full w-full object-cover" draggable={false} />
+                      <img src={thumbUrl(m.textureUrl, 96)} alt={m.name} loading="lazy" className="h-full w-full object-cover" draggable={false} />
                       {pinned && pinned.key === pinScope && pinned.name === m.name && (
                         <span className="absolute top-1 end-1 rounded-full bg-stone-900 p-0.5 text-ivory"><Pin size={10} strokeWidth={2} /></span>
                       )}
@@ -1804,7 +1805,7 @@ export function VisualizerPage() {
           {/* Selected Material Panel */}
           <div className="mt-8 bg-ivory p-6 md:p-8 border border-stone-200">
             <div className="flex flex-col md:flex-row gap-6 items-start">
-              <LazyImage src={selectedMaterial.textureUrl} alt={selectedMaterial.name} aspectClass="w-24 h-24 shrink-0" />
+              <LazyImage src={thumbUrl(selectedMaterial.textureUrl, 120)} alt={selectedMaterial.name} aspectClass="w-24 h-24 shrink-0" />
               <div className="flex-1">
                 <p className="text-xs tracking-[0.2em] uppercase text-stone-500 mb-1">{t('selectedMaterial')}</p>
                 <h3 className="font-display text-2xl font-light text-stone-900 mb-2">{selectedMaterial.name}</h3>
