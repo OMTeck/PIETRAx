@@ -34,7 +34,7 @@ import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 import { thumbUrl } from '@/lib/visualizer/thumb';
 import {
-  prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon,
+  prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon, polygonToMask,
   type WandImage, type WandMode,
 } from '@/lib/visualizer/magicWand';
 
@@ -781,6 +781,14 @@ export function VisualizerPage() {
     return surface?.clipPath || 'polygon(0 0, 100% 0, 100% 100%, 0 100%)';
   };
 
+  /** The polygon a surface currently uses, in the same order the renderer resolves it. */
+  const currentPolygonFor = (surfaceId: string): NormalizedPoint[] => {
+    const seg = aiSegments[surfaceId];
+    if (seg && seg.length >= 3) return seg;
+    if (uploadMode) return polygonFor(surfaceId);
+    return parseClipPath(selectedRoom?.surfaces.find((s) => s.id === surfaceId)?.clipPath || '');
+  };
+
   /** Magic-wand click: grow a region of similar colour from the clicked point. */
   const handleWandClick = async (e: React.MouseEvent<HTMLDivElement>) => {
     const target = wandTarget ?? surfaces[0]?.id;
@@ -803,7 +811,14 @@ export function VisualizerPage() {
         floodSelect(wi, nx, ny, { tolerance: wandTolerance, edgeThreshold: wandTolerance * 1.3 }),
         wi.w, wi.h, 'replace',
       );
-      const combined = finalizeMask(combineMasks(wandMasksRef.current[target] ?? null, fresh, wandMode), wi.w, wi.h, wandMode);
+      // Add / Subtract correct the area the surface already has (AI mask,
+      // default shape or preset clip path), not only earlier wand clicks.
+      let prev = wandMasksRef.current[target] ?? null;
+      if (!prev && wandMode !== 'replace') {
+        const existing = currentPolygonFor(target);
+        if (existing.length >= 3) prev = polygonToMask(existing, wi.w, wi.h);
+      }
+      const combined = finalizeMask(combineMasks(prev, fresh, wandMode), wi.w, wi.h, wandMode);
       const poly = maskToPolygon(combined, wi.w, wi.h);
       if (poly.length < 3) {
         setWandEmpty(true);
