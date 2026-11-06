@@ -8,7 +8,7 @@ import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
   ArrowLeft, Upload, ZoomIn, RotateCcw,
   Heart, Download, Share2, Check, Camera, X, Sparkles, Wand2,
-  ZoomOut, Columns2, ChevronsLeftRight, Pin, PinOff,
+  ZoomOut, Columns2, ChevronsLeftRight, Pin, PinOff, Video,
 } from 'lucide-react';
 
 import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
@@ -33,6 +33,7 @@ import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 import { thumbUrl } from '@/lib/visualizer/thumb';
 import { renderSurfaceTextureAsync } from '@/lib/visualizer/textureRenderClient';
+import { LiveCamera, type LiveCapture } from '@/components/visualizer/LiveCamera';
 import {
   prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon, polygonToMask,
   type WandImage, type WandMode,
@@ -77,6 +78,7 @@ export function VisualizerPage() {
   const allowExport = features?.allowExport !== false;
   const allowManualAreaEdit = features?.allowManualAreaEdit !== false;
   const allowCompare = features?.allowCompare !== false;
+  const allowLiveCamera = allowUpload && features?.allowLiveCamera !== false;
   const behavior = visualizerConfig?.behavior;
   const surfacesConfig = behavior?.surfaces?.length ? behavior.surfaces : FALLBACK_SURFACES;
   const surfaceConfigById = useMemo(() => {
@@ -152,6 +154,9 @@ export function VisualizerPage() {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [exportError, setExportError] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [liveOpen, setLiveOpen] = useState(false);
+  /** Area tracked in live mode, applied once the captured frame is in place. */
+  const pendingLiveRef = useRef<Partial<Record<string, NormalizedPoint[]>> | null>(null);
   /** A pinned result (another material) the compare slider shows instead of the photo. */
   const [pinned, setPinned] = useState<{ url: string; name: string; key: string } | null>(null);
   const stripRef = useRef<HTMLDivElement>(null);
@@ -209,6 +214,10 @@ export function VisualizerPage() {
   /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
   useEffect(() => {
     if (!uploadedImage || !uploadMode) return;
+    if (pendingLiveRef.current) {
+      setAiSegments(pendingLiveRef.current);
+      pendingLiveRef.current = null;
+    }
     const img = new Image();
     img.onload = () => {
       setLayout(analyzeRoomPhoto(img));
@@ -301,6 +310,27 @@ export function VisualizerPage() {
     setSelectedRoomId(null);
     setSelectedSurfaceId(null);
     setStep('surface');
+  };
+
+  /** Live camera "capture & refine": continue in the precise flow with the tracked area. */
+  const handleLiveCapture = (cap: LiveCapture) => {
+    setLiveOpen(false);
+    const surface = surfaceConfigById[cap.kind]
+      ?? surfacesConfig.find((s) => s.noun.toLowerCase().includes(cap.kind))
+      ?? surfacesConfig[0];
+    const hasArea = cap.polygon.length >= 3 && surface;
+    if (hasArea) pendingLiveRef.current = { [surface.id]: cap.polygon };
+    applyRoomImage(cap.image);
+    if (hasArea) {
+      analyzedRef.current = cap.image; // keep the tracked area; AI analysis stays one click away
+      setSelectedSurfaceId(surface.id);
+      if (cap.materialId) {
+        setSelectedMaterialId(cap.materialId);
+        setStep('result');
+      } else {
+        setStep('material');
+      }
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -717,6 +747,13 @@ export function VisualizerPage() {
     objectUrlsRef.current.clear();
   }, []);
 
+  /** Display name of the selected surface (preset room surface or upload surface). */
+  const selectedSurfaceLabel = (() => {
+    const named = selectedSurface ?? (selectedSurfaceId ? surfaceConfigById[selectedSurfaceId] : undefined);
+    if (!named) return selectedSurfaceId ?? '';
+    return (lang === 'ar' ? named.nameAr : named.nameEn) || selectedSurfaceId || '';
+  })();
+
   /** What the result step shows: the AI image when present, else the engine composite. */
   const resultImageUrl = aiResultUrl ?? compositeUrl;
   /** A pin belongs to one photo + surface; it is dropped when either changes. */
@@ -1026,6 +1063,21 @@ export function VisualizerPage() {
                 <p className="text-sm text-stone-500">{t('cameraHint')}</p>
               </button>
             </div>
+            {allowLiveCamera && (
+              <button
+                onClick={() => setLiveOpen(true)}
+                className="-mt-4 mb-8 flex w-full items-center gap-4 border-2 border-stone-900 bg-stone-900 p-5 text-start text-ivory transition-colors hover:bg-stone-800 md:p-6"
+              >
+                <Video size={28} strokeWidth={1.5} className="shrink-0" />
+                <span className="flex-1">
+                  <span className="flex items-center gap-2 font-display text-xl font-light">
+                    {t('vzLive')}
+                    <span className="rounded-full border border-ivory/40 px-2 py-0.5 text-[10px] tracking-[0.15em] uppercase">{t('vzLiveBadge')}</span>
+                  </span>
+                  <span className="mt-1 block text-sm text-stone-300">{t('vzLiveDesc')}</span>
+                </span>
+              </button>
+            )}
             {uploadError && <p role="alert" className="-mt-4 mb-6 text-sm text-red-700">{t('vzUploadInvalid')}</p>}
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
           </Reveal>
@@ -1491,7 +1543,7 @@ export function VisualizerPage() {
               {/* Labels */}
             <div className="absolute bottom-4 left-4 flex gap-2">
               <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">
-                {lang === 'ar' ? selectedSurface?.nameAr || selectedSurfaceId : selectedSurface?.nameEn || selectedSurfaceId}
+                {selectedSurfaceLabel}
               </span>
               {!showOriginal && aiResultUrl && (
                 <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">AI</span>
@@ -1904,6 +1956,16 @@ export function VisualizerPage() {
             </div>
           )}
         </div>
+      )}
+
+      {liveOpen && (
+        <LiveCamera
+          materials={visMaterials}
+          initialMaterialId={selectedMaterialId}
+          t={t}
+          onClose={() => setLiveOpen(false)}
+          onCapture={handleLiveCapture}
+        />
       )}
 
       {cameraOpen && (

@@ -370,6 +370,7 @@ export interface VisualizerSettings {
     allowExport: boolean;
     allowCompare: boolean;
     allowManualAreaEdit: boolean;
+    allowLiveCamera: boolean;
   };
   analysis: {
     enabled: boolean;

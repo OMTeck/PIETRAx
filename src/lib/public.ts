@@ -163,6 +163,7 @@ export interface PubVisualizerConfig {
     allowExport: boolean;
     allowCompare: boolean;
     allowManualAreaEdit: boolean;
+    allowLiveCamera?: boolean;
   };
   analysis: { enabled: boolean; autoApply: boolean };
   edit: { enabled: boolean; maxInputDim: number; quality: number; promptTemplate: string };
