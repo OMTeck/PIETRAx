@@ -87,7 +87,7 @@ export function downloadBlob(blob: Blob, filename: string): void {
 
 /** Shares the image via the Web Share API when available; falls back to download. */
 export async function shareBlob(blob: Blob, title: string, fallbackFilename: string): Promise<'shared' | 'downloaded'> {
-  const file = new File([blob], fallbackFilename, { type: 'image/png' });
+  const file = new File([blob], fallbackFilename, { type: blob.type || 'image/png' });
   const shareData = { title, files: [file] };
   if (navigator.share && navigator.canShare?.(shareData)) {
     try {

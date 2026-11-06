@@ -7,7 +7,8 @@ import { pubMaterialName, publicApi, type PubVisualizerSurface } from '@/lib/pub
 import { Reveal, LazyImage } from '@/components/ui/Reveal';
 import {
   ArrowLeft, Upload, ZoomIn, RotateCcw,
-  Heart, Download, Share2, Check, Camera, X, Sparkles,
+  Heart, Download, Share2, Check, Camera, X, Sparkles, Wand2,
+  ZoomOut, Columns2, ChevronsLeftRight, Pin, PinOff,
 } from 'lucide-react';
 
 import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
@@ -31,6 +32,16 @@ import { downloadBlob, shareBlob } from '@/lib/visualizer/domSnapshot';
 import type { RoomLayout, Step, VisMaterial, NormalizedPoint, SurfaceKind } from '@/lib/visualizer/types';
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
+import { thumbUrl } from '@/lib/visualizer/thumb';
+import {
+  prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon,
+  type WandImage, type WandMode,
+} from '@/lib/visualizer/magicWand';
+
+/** Long edge of the working copy of an uploaded photo. */
+const UPLOAD_MAX_DIM = 2400;
+/** Debounce for re-rendering the composite while controls change. */
+const RENDER_DEBOUNCE_MS = 120;
 
 /** Mirrors the server defaults so the page still works before /config loads. */
 const FALLBACK_SURFACES: PubVisualizerSurface[] = [
@@ -58,13 +69,14 @@ export function VisualizerPage() {
   const params = new URLSearchParams(path.split('?')[1] || '');
   const presetMaterialSlug = params.get('material');
 
-  const rooms = visualizer?.rooms ?? [];
+  const rooms = useMemo(() => visualizer?.rooms ?? [], [visualizer]);
 
   const features = visualizerConfig?.features;
   const allowUpload = features?.allowUpload !== false;
   const allowPresetRooms = features?.allowPresetRooms !== false;
   const allowExport = features?.allowExport !== false;
   const allowManualAreaEdit = features?.allowManualAreaEdit !== false;
+  const allowCompare = features?.allowCompare !== false;
   const behavior = visualizerConfig?.behavior;
   const surfacesConfig = behavior?.surfaces?.length ? behavior.surfaces : FALLBACK_SURFACES;
   const surfaceConfigById = useMemo(() => {
@@ -137,6 +149,16 @@ export function VisualizerPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [exportError, setExportError] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  /** A pinned result (another material) the compare slider shows instead of the photo. */
+  const [pinned, setPinned] = useState<{ url: string; name: string; key: string } | null>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [zoomOrigin, setZoomOrigin] = useState({ x: 50, y: 50 });
+  const [savedAdded, setSavedAdded] = useState(true);
+  const savedTimerRef = useRef<number | null>(null);
+  const [uploadError, setUploadError] = useState(false);
 
   // Camera capture.
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -157,6 +179,7 @@ export function VisualizerPage() {
   const [aiApplying, setAiApplying] = useState(false);
   const [aiApplyError, setAiApplyError] = useState(false);
   const aiAppliedRef = useRef<string | null>(null);
+  const aiRequestRef = useRef(0);
 
   // Room-scale calibration: a user-drawn reference of known real length.
   const [calibOpen, setCalibOpen] = useState(false);
@@ -173,6 +196,16 @@ export function VisualizerPage() {
   /** Coverage / waste readout for the current surface + piece size. */
   const [installStats, setInstallStats] = useState<ReturnType<typeof computeInstallStats> | null>(null);
 
+  // Smart "magic wand" selection: click any part of the photo to select it.
+  const [wandActive, setWandActive] = useState(false);
+  const [wandTarget, setWandTarget] = useState<string | null>(null);
+  const [wandMode, setWandMode] = useState<WandMode>('replace');
+  const [wandTolerance, setWandTolerance] = useState(14);
+  const [wandBusy, setWandBusy] = useState(false);
+  const [wandEmpty, setWandEmpty] = useState(false);
+  const wandImageRef = useRef<{ key: string; img: WandImage } | null>(null);
+  const wandMasksRef = useRef<Record<string, Uint8Array>>({});
+
   /** Run on-device room analysis once per upload: yields horizon + px-per-meter. */
   useEffect(() => {
     if (!uploadedImage || !uploadMode) return;
@@ -185,31 +218,35 @@ export function VisualizerPage() {
     return () => { setLayout(null); setAiSegments({}); setEditingSurfaceId(null); setImageAspect(null); analyzedRef.current = null; };
   }, [uploadedImage, uploadMode]);
 
+  /**
+   * Deep link (`?material=slug`, from collections / wishlist): preselect the
+   * material and open it in a matching preset room. Applied once per slug, so
+   * it never hijacks the visitor's later choices (e.g. uploading their photo).
+   */
+  const presetAppliedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (presetMaterialSlug && !selectedMaterialId) {
-      const match = visMaterials.find((m) => m.slug === presetMaterialSlug);
-      if (match) setSelectedMaterialId(match.id);
-    }
-  }, [presetMaterialSlug, visMaterials, selectedMaterialId]);
-
-  useEffect(() => {
-    if (!presetMaterialSlug || selectedRoomId) return;
+    if (!presetMaterialSlug || presetAppliedRef.current === presetMaterialSlug) return;
     const material = visMaterials.find((m) => m.slug === presetMaterialSlug);
-    const room = rooms.find((r) => r.surfaces.some((s) => s.defaultMaterialSlug === presetMaterialSlug)) ?? rooms[0];
-    if (!room || !material) return;
-    const surface = room.surfaces.find((s) => s.defaultMaterialSlug === presetMaterialSlug) ?? room.surfaces[0];
-    if (!surface) return;
+    if (!material) return; // catalog not loaded yet
+    const room = allowPresetRooms
+      ? rooms.find((r) => r.surfaces.some((s) => s.defaultMaterialSlug === presetMaterialSlug)) ?? rooms[0]
+      : undefined;
+    if (allowPresetRooms && loading && !room) return; // rooms still loading
+    presetAppliedRef.current = presetMaterialSlug;
     setSelectedMaterialId(material.id);
+    const surface = room?.surfaces.find((s) => s.defaultMaterialSlug === presetMaterialSlug) ?? room?.surfaces[0];
+    if (!room || !surface) return; // no preset room: the visitor uploads, material stays selected
     setSelectedRoomId(room.id);
     setSelectedSurfaceId(surface.id);
-    setStep('result');
     setUploadMode(false);
     setUploadedImage(null);
-  }, [presetMaterialSlug, rooms, visMaterials, selectedRoomId]);
+    setStep('result');
+  }, [presetMaterialSlug, rooms, visMaterials, allowPresetRooms, loading]);
 
   const filteredMaterials = useMemo(() => {
     return visMaterials.filter((m) => {
-      if (searchQuery && !m.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      const q = searchQuery.trim().toLowerCase();
+      if (q && ![m.name, m.enName, m.slug.replace(/-/g, ' '), m.typeLabel, m.colourLabel].some((v) => (v || '').toLowerCase().includes(q))) return false;
       if (filterCategory !== 'All' && m.typeCode !== filterCategory) return false;
       return true;
     });
@@ -227,6 +264,14 @@ export function VisualizerPage() {
   // for it); uploads keep the photo's own aspect.
   const displayAspect = uploadMode && imageAspect ? imageAspect : presetAspect;
 
+  // A new photo invalidates any magic-wand selection state.
+  useEffect(() => {
+    wandMasksRef.current = {};
+    wandImageRef.current = null;
+    setWandActive(false);
+    setWandEmpty(false);
+  }, [roomImage]);
+
   /** Maps a detected surfaceType to the active surface id (upload id or preset id). */
   const surfaceIdForType = (type: string): string | null => {
     const k = type.toLowerCase();
@@ -235,14 +280,15 @@ export function VisualizerPage() {
       const byNoun = surfacesConfig.find((s) => s.noun.toLowerCase().includes(k));
       return byNoun?.id ?? null;
     }
-    const match = selectedRoom?.surfaces.find((s) => {
-      const n = (s.nameEn || '').toLowerCase();
-      if (k === 'floor') return n.includes('floor');
-      if (k === 'wall') return n.includes('wall');
-      if (k === 'ceiling') return n.includes('ceiling');
-      if (k === 'countertop') return n.includes('counter') || n.includes('island') || n.includes('cabinet');
-      return false;
-    });
+    const list = selectedRoom?.surfaces ?? [];
+    const typed = (...types: string[]) => list.find((s) => types.includes((s.surfaceType || '').toUpperCase()));
+    const named = (...words: string[]) => list.find((s) => words.some((w) => (s.nameEn || '').toLowerCase().includes(w)));
+    const match =
+      k === 'floor' ? typed('FLOOR') ?? named('floor')
+      : k === 'wall' ? typed('WALL') ?? typed('BACKSPLASH') ?? named('wall', 'back')
+      : k === 'ceiling' ? typed('CEILING') ?? named('ceiling')
+      : k === 'countertop' ? typed('COUNTERTOP', 'ISLAND', 'VANITY') ?? named('counter', 'island', 'cabinet', 'vanity')
+      : undefined;
     return match?.id ?? null;
   };
 
@@ -258,13 +304,47 @@ export function VisualizerPage() {
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (ev) => applyRoomImage(ev.target?.result as string);
-      reader.readAsDataURL(file);
+    const input = e.currentTarget;
+    const file = input.files?.[0];
+    input.value = ''; // picking the same photo again must still fire onChange
+    if (file) void processRoomFile(file);
+  };
+
+  /** Validates, downsizes and applies a room photo from any source (picker, drop, paste). */
+  const processRoomFile = async (file: File) => {
+    setUploadError(false);
+    if (file.type && !file.type.startsWith('image/')) {
+      setUploadError(true);
+      return;
+    }
+    setUploadBusy(true);
+    try {
+      // Phone photos can be 12+ MP: cap the working copy so every canvas step
+      // (analysis, smart select, texture render, export) stays fast.
+      const { dataUrl } = await compressImage(file, { maxDim: UPLOAD_MAX_DIM, quality: 0.9 });
+      applyRoomImage(dataUrl);
+    } catch {
+      setUploadError(true); // e.g. HEIC the browser cannot decode
+    } finally {
+      setUploadBusy(false);
     }
   };
+
+  // Paste a photo straight from the clipboard while on the first step.
+  const processRoomFileRef = useRef(processRoomFile);
+  processRoomFileRef.current = processRoomFile;
+  useEffect(() => {
+    if (step !== 'room' || !allowUpload) return;
+    const onPaste = (e: ClipboardEvent) => {
+      const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === 'file' && i.type.startsWith('image/'));
+      const file = item?.getAsFile();
+      if (!file) return;
+      e.preventDefault();
+      void processRoomFileRef.current(file);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [step, allowUpload]);
 
   const stopCameraStream = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -311,6 +391,12 @@ export function VisualizerPage() {
     closeCamera();
     applyRoomImage(dataUrl);
   };
+
+  // Never leave the camera running after the visitor navigates away.
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
 
   // Attach the live stream once the preview element is mounted.
   useEffect(() => {
@@ -437,14 +523,17 @@ export function VisualizerPage() {
    * texture onto the selected surface using projective geometry + tiling.
    * No generative model is involved — source pixels are copied verbatim.
    */
-  const renderComposite = async (maxDimension?: number) => {
+  const renderSeqRef = useRef(0);
+  const renderComposite = async (maxDimension?: number): Promise<HTMLCanvasElement | null> => {
+    const seq = ++renderSeqRef.current;
+    const isCurrent = () => seq === renderSeqRef.current;
     const base = uploadedImage ?? selectedRoom?.previewImage ?? null;
     const material = visMaterials.find((m) => m.id === selectedMaterialId);
     const surfaceId = selectedSurfaceId || (uploadMode ? 'floor' : selectedRoom?.surfaces[0]?.id);
     if (!base || !material?.textureUrl || !surfaceId) {
       compositeCanvasRef.current = null;
       setCompositeUrl(null);
-      return;
+      return null;
     }
     const aiPoly = aiSegments[surfaceId];
     const polygon = aiPoly && aiPoly.length >= 3
@@ -455,30 +544,37 @@ export function VisualizerPage() {
     if (polygon.length < 3) {
       compositeCanvasRef.current = null;
       setCompositeUrl(null);
-      return;
+      return null;
     }
     try {
       const [room, texture] = await Promise.all([loadImage(base), loadImage(material.textureUrl)]);
+      if (!isCurrent()) return null;
       const aspect = uploadMode && imageAspect ? imageAspect : presetAspect;
       const box = coverCanvas(room, aspect, maxDimension ?? 1600);
       const imageW = room.naturalWidth || box.width;
+      const imageH = room.naturalHeight || box.height;
       const ppmBase = calibPxPerMeter
         ?? (uploadMode && layout ? layout.pxPerMeter : Math.max(80, Math.round(imageW / 4)));
+      // Source px -> box px: the cover scale (not box.width / imageW, which is
+      // wrong whenever the cover crop trims the photo's width).
+      const coverScale = Math.max(box.width / imageW, box.height / imageH);
+      const boxPpm = ppmBase * coverScale;
       const canvas = renderSurfaceTexture({
         roomImage: box,
         polygon,
         texture,
         params: { ...textureParams, sourceRegion },
-        pxPerMeter: ppmBase * (box.width / imageW),
+        pxPerMeter: boxPpm,
         surfaceKind: surfaceKindFor(surfaceId),
       });
+      if (!isCurrent()) return canvas;
       compositeCanvasRef.current = canvas;
       setCompositeUrl(canvas.toDataURL('image/png'));
       setRenderError(false);
       // Coverage / waste readout from the same physical measurement the render uses.
       const measured = measureSurfacePhysical({
         polygon,
-        pxPerMeter: ppmBase * (box.width / imageW),
+        pxPerMeter: boxPpm,
         imageWidth: box.width,
         imageHeight: box.height,
       });
@@ -490,12 +586,15 @@ export function VisualizerPage() {
           surfaceHeightM: measured.heightM,
           pieceWidthM: pieceW,
           pieceHeightM: pieceH,
+          coverage: measured.coverage,
         }));
       } else {
         setInstallStats(null);
       }
+      return canvas;
     } catch {
-      setRenderError(true);
+      if (isCurrent()) setRenderError(true);
+      return null;
     }
   };
 
@@ -519,10 +618,12 @@ export function VisualizerPage() {
     }
   }, [selectedMaterialId, installMode, defaultSampling, serverShadow]);
 
-  // Re-render the composite whenever the inputs change.
+  // Re-render the composite whenever the inputs change (debounced so typing in
+  // a number field or dragging a slider does not queue a render per keystroke).
   useEffect(() => {
     if (step !== 'result') return;
-    void renderCompositeRef.current(1100);
+    const timer = window.setTimeout(() => { void renderCompositeRef.current(1100); }, RENDER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
   }, [step, uploadedImage, selectedRoomId, selectedSurfaceId, selectedMaterialId, textureParams, uploadMode, layout, aiSegments, visMaterials, calibPxPerMeter, sourceRegion]);
 
   /**
@@ -535,6 +636,8 @@ export function VisualizerPage() {
     const material = visMaterials.find((m) => m.id === selectedMaterialId);
     const surfaceId = selectedSurfaceId || (uploadMode ? 'floor' : selectedRoom?.surfaces[0]?.id);
     if (!roomImage || !material || !surfaceId) return;
+    const requestId = ++aiRequestRef.current;
+    const isCurrent = () => requestId === aiRequestRef.current;
     setAiApplying(true);
     setAiApplyError(false);
     try {
@@ -560,24 +663,105 @@ export function VisualizerPage() {
         mime: 'image/jpeg',
         ...(reference ? { reference, referenceMime: 'image/jpeg' } : {}),
       });
+      // A newer selection superseded this request: never show a result for
+      // the previous material / surface.
+      if (!isCurrent()) return;
+      if (!res.image) throw new Error('empty result');
       setAiResultUrl(res.image);
     } catch {
-      setAiApplyError(true);
+      if (isCurrent()) setAiApplyError(true);
     } finally {
-      setAiApplying(false);
+      if (isCurrent()) setAiApplying(false);
     }
   };
   const applyWithAiRef = useRef(applyWithAi);
   applyWithAiRef.current = applyWithAi;
 
   // Auto-apply with the LLM once per room/surface/material when the result opens.
+  // A new selection first drops the previous AI image (it shows another material).
   useEffect(() => {
-    if (step !== 'result' || !editEnabled) return;
+    if (step !== 'result') return;
     const key = `${selectedRoomId ?? 'upload'}|${selectedSurfaceId ?? ''}|${selectedMaterialId ?? ''}|${roomImage ?? ''}`;
     if (aiAppliedRef.current === key) return;
     aiAppliedRef.current = key;
-    void applyWithAiRef.current();
+    aiRequestRef.current++; // cancel any request still in flight
+    setAiResultUrl(null);
+    setAiApplyError(false);
+    setAiApplying(false);
+    if (editEnabled) void applyWithAiRef.current();
   }, [step, editEnabled, selectedRoomId, selectedSurfaceId, selectedMaterialId, roomImage]);
+
+  /** What the result step shows: the AI image when present, else the engine composite. */
+  const resultImageUrl = aiResultUrl ?? compositeUrl;
+  /** A pin belongs to one photo + surface; it is dropped when either changes. */
+  const pinScope = `${roomImage ?? ''}|${selectedSurfaceId ?? ''}`;
+  const activePin = pinned && pinned.key === pinScope && selectedMaterial && pinned.name !== selectedMaterial.name ? pinned : null;
+
+  /** Switch material in place (result step strip, arrow keys). */
+  const switchMaterial = (delta: number) => {
+    if (!visMaterials.length) return;
+    const i = visMaterials.findIndex((m) => m.id === selectedMaterialId);
+    const next = visMaterials[(i + delta + visMaterials.length) % visMaterials.length];
+    setSelectedMaterialId(next.id);
+  };
+  const switchMaterialRef = useRef(switchMaterial);
+  switchMaterialRef.current = switchMaterial;
+
+  // ← / → switch material on the result step (visual order, so RTL is respected).
+  useEffect(() => {
+    if (step !== 'result') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName))) return;
+      const rtl = document.documentElement.dir === 'rtl';
+      const forward = e.key === 'ArrowRight' ? !rtl : rtl;
+      e.preventDefault();
+      switchMaterialRef.current(forward ? 1 : -1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [step]);
+
+  // Keep the active thumbnail in view in the quick-switch strip.
+  useEffect(() => {
+    if (step !== 'result' || !selectedMaterialId) return;
+    const el = stripRef.current?.querySelector<HTMLElement>(`[data-mat="${selectedMaterialId}"]`);
+    el?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+  }, [step, selectedMaterialId]);
+
+  /** Back to step 1 with a clean slate (photo, selection, masks, scale, view). */
+  const startOver = () => {
+    aiRequestRef.current++;
+    renderSeqRef.current++;
+    aiAppliedRef.current = null;
+    wandMasksRef.current = {};
+    setStep('room');
+    setUploadedImage(null);
+    setUploadMode(false);
+    setSelectedRoomId(null);
+    setSelectedSurfaceId(null);
+    setSelectedMaterialId(null);
+    setAiSegments({});
+    setEditingSurfaceId(null);
+    setWandActive(false);
+    setShowOriginal(false);
+    setCompositeUrl(null);
+    compositeCanvasRef.current = null;
+    setAiResultUrl(null);
+    setAiApplying(false);
+    setAiApplyError(false);
+    setRenderError(false);
+    setExportError(false);
+    setSourceRegion(null);
+    setShowCompare(false);
+    setCompareSplit(0.5);
+    setCalibPxPerMeter(null);
+    setInstallStats(null);
+    setPinned(null);
+    setZoom(1);
+    analyzedRef.current = null;
+  };
 
   /** Pick a surface and move to the material step. */
   const selectSurface = (surfaceId: string) => {
@@ -597,6 +781,55 @@ export function VisualizerPage() {
     return surface?.clipPath || 'polygon(0 0, 100% 0, 100% 100%, 0 100%)';
   };
 
+  /** Magic-wand click: grow a region of similar colour from the clicked point. */
+  const handleWandClick = async (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = wandTarget ?? surfaces[0]?.id;
+    if (!roomImage || !target || wandBusy) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const nx = (e.clientX - rect.left) / rect.width;
+    const ny = (e.clientY - rect.top) / rect.height;
+    if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return;
+    setWandBusy(true);
+    try {
+      const key = `${roomImage}|${displayAspect}`;
+      if (wandImageRef.current?.key !== key) {
+        const img = await loadImage(roomImage);
+        const prepared = prepareWandImage(img, displayAspect);
+        if (!prepared) return;
+        wandImageRef.current = { key, img: prepared };
+      }
+      const wi = wandImageRef.current.img;
+      const fresh = finalizeMask(
+        floodSelect(wi, nx, ny, { tolerance: wandTolerance, edgeThreshold: wandTolerance * 1.3 }),
+        wi.w, wi.h, 'replace',
+      );
+      const combined = finalizeMask(combineMasks(wandMasksRef.current[target] ?? null, fresh, wandMode), wi.w, wi.h, wandMode);
+      const poly = maskToPolygon(combined, wi.w, wi.h);
+      if (poly.length < 3) {
+        setWandEmpty(true);
+        return;
+      }
+      setWandEmpty(false);
+      wandMasksRef.current[target] = combined;
+      setAiSegments((prev) => ({ ...prev, [target]: poly }));
+    } catch {
+      setWandEmpty(true);
+    } finally {
+      setWandBusy(false);
+    }
+  };
+
+  const clearWandSelection = () => {
+    const target = wandTarget ?? surfaces[0]?.id;
+    if (!target) return;
+    delete wandMasksRef.current[target];
+    setAiSegments((prev) => {
+      const next = { ...prev };
+      delete next[target];
+      return next;
+    });
+  };
+
   const uploadSurfaces = surfacesConfig.map((s) => ({ id: s.id, name: s.nameEn, nameAr: s.nameAr }));
 
   const surfaces = uploadMode
@@ -604,47 +837,33 @@ export function VisualizerPage() {
     : (selectedRoom?.surfaces ?? []).map((s) => ({ id: s.id, clipPath: s.clipPath, nameAr: s.nameAr, nameEn: s.nameEn }));
 
   const handleExport = async (mode: 'download' | 'share') => {
+    setExportError(false);
     if (exporting) return;
     setExporting(true);
     try {
       // Export what is on screen: the LLM-applied result when shown, otherwise
       // re-render the deterministic engine composite at full resolution.
+      let blob: Blob | null = null;
       if (!showOriginal && aiResultUrl) {
-        const blob = await (await fetch(aiResultUrl)).blob();
-        if (mode === 'download') {
-          downloadBlob(blob, 'pietrax-visualizer.png');
-        } else {
-          await shareBlob(blob, selectedMaterial?.name ?? 'PIETRAx', 'pietrax-visualizer.png');
-        }
+        blob = await (await fetch(aiResultUrl)).blob();
+      } else {
+        const canvas = (await renderCompositeRef.current(undefined)) ?? compositeCanvasRef.current;
+        blob = canvas
+          ? await new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), 'image/png'))
+          : null;
+      }
+      if (!blob) {
+        setExportError(true);
         return;
       }
-      // Re-render at full resolution and export losslessly as PNG.
-      await renderCompositeRef.current(undefined);
-      const canvas = compositeCanvasRef.current;
-      const blob = canvas
-        ? await new Promise<Blob>((resolve, reject) =>
-            canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Encode failed'))), 'image/png'),
-          )
-        : null;
-      if (blob) {
-        if (mode === 'download') {
-          downloadBlob(blob, 'pietrax-visualizer.png');
-        } else {
-          await shareBlob(blob, selectedMaterial?.name ?? 'PIETRAx', 'pietrax-visualizer.png');
-        }
-      } else if (roomImage) {
-        const a = document.createElement('a');
-        a.href = roomImage;
-        a.download = 'pietrax-visualizer.png';
-        a.click();
-      }
+      const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
+      const slug = selectedMaterial?.slug ?? 'design';
+      const filename = `pietrax-${slug}.${ext}`;
+      if (mode === 'download') downloadBlob(blob, filename);
+      else await shareBlob(blob, selectedMaterial?.name ?? 'PIETRAx', filename);
     } catch {
-      if (compositeUrl) {
-        const a = document.createElement('a');
-        a.href = compositeUrl;
-        a.download = 'pietrax-visualizer.png';
-        a.click();
-      }
+      // Never hand out the untouched photo as if it were the design.
+      setExportError(true);
     } finally {
       setExporting(false);
     }
@@ -670,6 +889,20 @@ export function VisualizerPage() {
 
   const steps: Step[] = ['room', 'surface', 'material', 'result'];
   const currentStepIndex = steps.indexOf(step);
+  /** Completed steps are links back; forward only when its inputs exist. */
+  const canGoToStep = (s: Step, i: number): boolean => {
+    if (i === currentStepIndex) return false;
+    if (s === 'room') return true;
+    if (s === 'surface') return Boolean(roomImage);
+    if (s === 'material') return Boolean(roomImage && (selectedSurfaceId || uploadMode));
+    return Boolean(roomImage && selectedMaterial && (selectedSurfaceId || uploadMode));
+  };
+  const goToStep = (s: Step) => {
+    setShowOriginal(false);
+    setWandActive(false);
+    setEditingSurfaceId(null);
+    setStep(s);
+  };
 
   return (
     <div className="pt-20 md:pt-24 min-h-screen bg-stone-100">
@@ -686,7 +919,14 @@ export function VisualizerPage() {
         <div className="flex items-center gap-2 md:gap-4">
           {steps.map((s, i) => (
             <div key={s} className="flex items-center gap-2 md:gap-4">
-              <div className={`flex items-center gap-2 ${i <= currentStepIndex ? 'text-stone-900' : 'text-stone-400'}`}>
+              <button
+                type="button"
+                disabled={!canGoToStep(s, i)}
+                onClick={() => goToStep(s)}
+                aria-current={i === currentStepIndex ? 'step' : undefined}
+                aria-label={`${t('vzGoToStep')} ${i + 1}`}
+                className={`flex items-center gap-2 disabled:cursor-default ${i <= currentStepIndex ? 'text-stone-900' : 'text-stone-400'} ${canGoToStep(s, i) ? 'hover:opacity-70' : ''}`}
+              >
                 <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs border transition-all ${
                   i === currentStepIndex ? 'bg-stone-900 text-ivory border-stone-900' :
                   i < currentStepIndex ? 'bg-stone-200 text-stone-900 border-stone-200' :
@@ -697,7 +937,7 @@ export function VisualizerPage() {
                 <span className="text-xs tracking-[0.15em] uppercase hidden md:inline">
                   {s === 'room' ? t('chooseRoom') : s === 'surface' ? t('chooseSurface') : s === 'material' ? t('chooseMaterial') : t('applyMaterial')}
                 </span>
-              </div>
+              </button>
               {i < steps.length - 1 && <div className={`w-8 md:w-16 h-px ${i < currentStepIndex ? 'bg-stone-900' : 'bg-stone-300'}`} />}
             </div>
           ))}
@@ -713,11 +953,27 @@ export function VisualizerPage() {
             <div className="grid md:grid-cols-2 gap-4 mb-8">
               <button
                 onClick={() => fileRef.current?.click()}
-                className="w-full border-2 border-dashed border-stone-300 hover:border-stone-900 transition-colors p-8 md:p-12 flex flex-col items-center gap-3 text-stone-600 hover:text-stone-900"
+                disabled={uploadBusy}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) void processRoomFile(file);
+                }}
+                className={`w-full border-2 border-dashed transition-colors p-8 md:p-12 flex flex-col items-center gap-3 hover:text-stone-900 disabled:opacity-60 ${
+                  dragOver ? 'border-stone-900 bg-stone-200/60 text-stone-900' : 'border-stone-300 hover:border-stone-900 text-stone-600'
+                }`}
               >
-                <Upload size={28} strokeWidth={1.5} />
-                <p className="font-display text-xl font-light">{t('uploadYourRoom')}</p>
+                {uploadBusy
+                  ? <span className="inline-block h-7 w-7 rounded-full border-2 border-stone-300 border-t-stone-800 animate-spin" />
+                  : <Upload size={28} strokeWidth={1.5} />}
+                <p className="font-display text-xl font-light">
+                  {uploadBusy ? t('vzUploadBusy') : dragOver ? t('vzDropNow') : t('uploadYourRoom')}
+                </p>
                 <p className="text-sm text-stone-500">{t('uploadRoomDesc')}</p>
+                <p className="hidden md:block text-xs text-stone-400">{t('vzDropHint')}</p>
               </button>
               <button
                 onClick={openCamera}
@@ -729,6 +985,7 @@ export function VisualizerPage() {
                 <p className="text-sm text-stone-500">{t('cameraHint')}</p>
               </button>
             </div>
+            {uploadError && <p role="alert" className="-mt-4 mb-6 text-sm text-red-700">{t('vzUploadInvalid')}</p>}
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
           </Reveal>
           )}
@@ -751,7 +1008,7 @@ export function VisualizerPage() {
                   className="group relative block w-full overflow-hidden"
                 >
                   <LazyImage
-                    src={room.previewImage ?? ''}
+                    src={thumbUrl(room.previewImage ?? '', 480)}
                     alt={lang === 'ar' ? room.nameAr : room.nameEn}
                     aspectClass="aspect-[4/3]"
                     className="transition-transform duration-500 group-hover:scale-105"
@@ -792,6 +1049,19 @@ export function VisualizerPage() {
                 onSegments={handleAISegments}
               />
             )}
+            {allowManualAreaEdit && (
+              <button
+                onClick={() => {
+                  setWandActive((v) => !v);
+                  setEditingSurfaceId(null);
+                  setWandTarget((cur) => cur ?? selectedSurfaceId ?? surfaces[0]?.id ?? null);
+                }}
+                aria-pressed={wandActive}
+                className={`flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 transition-colors ${wandActive ? 'bg-stone-900 text-ivory' : 'text-stone-900 hover:bg-stone-900 hover:text-ivory'}`}
+              >
+                <Wand2 size={13} strokeWidth={1.5} /> {t('smartSelect')}
+              </button>
+            )}
             {uploadMode && allowManualAreaEdit && editingSurfaceId && (
               <button
                 onClick={() => setEditingSurfaceId(null)}
@@ -812,19 +1082,116 @@ export function VisualizerPage() {
             <p className="text-xs text-stone-500 mb-6">{t('aiAutoHint')}</p>
           )}
 
-          {editingSurfaceId && uploadMode ? (
+          {wandActive ? (
+            <div className="mb-6 border border-stone-300 bg-stone-100 p-3">
+              <p className="text-xs text-stone-500 mb-3">{t('smartSelectHint')}</p>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-3 mb-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] tracking-[0.15em] uppercase text-stone-500">{t('wandTarget')}</span>
+                  {surfaces.map((surface) => {
+                    const active = (wandTarget ?? surfaces[0]?.id) === surface.id;
+                    return (
+                      <button
+                        key={surface.id}
+                        onClick={() => setWandTarget(surface.id)}
+                        aria-pressed={active}
+                        className={`text-xs px-3 py-1.5 border transition-colors ${active ? 'border-stone-900 bg-stone-900 text-ivory' : 'border-stone-300 text-stone-700 hover:border-stone-900'}`}
+                      >
+                        {lang === 'ar' ? (surface.nameAr || t(surface.id === 'floor' ? 'floor' : surface.id === 'wall' ? 'wall' : 'countertop')) : surface.nameEn}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center border border-stone-300" role="group">
+                  {(['replace', 'add', 'subtract'] as WandMode[]).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setWandMode(m)}
+                      aria-pressed={wandMode === m}
+                      className={`text-xs px-3 py-1.5 transition-colors ${wandMode === m ? 'bg-stone-900 text-ivory' : 'text-stone-700 hover:bg-stone-200'}`}
+                    >
+                      {t(m === 'replace' ? 'wandNew' : m === 'add' ? 'wandAdd' : 'wandSubtract')}
+                    </button>
+                  ))}
+                </div>
+                <label className="flex items-center gap-2 text-[11px] tracking-[0.15em] uppercase text-stone-500">
+                  {t('wandTolerance')}
+                  <input
+                    type="range"
+                    min={4}
+                    max={40}
+                    step={1}
+                    value={wandTolerance}
+                    onChange={(e) => setWandTolerance(Number(e.target.value))}
+                    className="w-28 accent-stone-900"
+                  />
+                </label>
+              </div>
+              <div
+                className={`relative overflow-hidden bg-stone-200 select-none ${wandBusy ? 'cursor-wait' : 'cursor-crosshair'}`}
+                style={{ aspectRatio: `${displayAspect}` }}
+                onClick={(e) => { void handleWandClick(e); }}
+              >
+                <img src={roomImage} alt="Room" className="w-full h-full object-cover pointer-events-none" draggable={false} />
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none">
+                  {surfaces.map((surface) => {
+                    const pts = aiSegments[surface.id];
+                    if (!pts || pts.length < 3) return null;
+                    const active = (wandTarget ?? surfaces[0]?.id) === surface.id;
+                    return (
+                      <polygon
+                        key={surface.id}
+                        points={pts.map((p) => `${(p.x * 100).toFixed(2)},${(p.y * 100).toFixed(2)}`).join(' ')}
+                        fill={active ? 'rgba(194,65,12,0.35)' : 'rgba(255,255,255,0.18)'}
+                        stroke={active ? '#c2410c' : 'rgba(255,255,255,0.7)'}
+                        strokeWidth={active ? 0.4 : 0.25}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    );
+                  })}
+                </svg>
+                {wandBusy && (
+                  <span className="absolute top-3 end-3 inline-block h-4 w-4 rounded-full border-2 border-white/60 border-t-white animate-spin" />
+                )}
+              </div>
+              {wandEmpty && <p className="text-xs text-red-700 mt-2">{t('wandEmpty')}</p>}
+              <div className="flex flex-wrap gap-3 mt-3">
+                <button
+                  onClick={clearWandSelection}
+                  className="flex items-center gap-1.5 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900"
+                >
+                  <RotateCcw size={13} strokeWidth={1.5} /> {t('wandClear')}
+                </button>
+                <button
+                  onClick={() => {
+                    const target = wandTarget ?? surfaces[0]?.id;
+                    if (!target) return;
+                    setWandActive(false);
+                    selectSurface(target);
+                  }}
+                  disabled={!(aiSegments[wandTarget ?? surfaces[0]?.id ?? '']?.length)}
+                  className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 bg-stone-900 text-ivory hover:bg-stone-800 disabled:opacity-40"
+                >
+                  <Check size={13} strokeWidth={1.5} /> {t('wandUse')}
+                </button>
+              </div>
+            </div>
+          ) : editingSurfaceId && uploadMode ? (
             <div className="mb-6 border border-stone-300 bg-stone-100 p-3">
               <p className="text-xs tracking-[0.15em] uppercase text-stone-500 mb-3">{t('adjustAreaHint')}</p>
               <PolygonEditor
                 imageUrl={roomImage}
                 points={aiSegments[editingSurfaceId] ?? defaultUploadPolygon[editingSurfaceId] ?? []}
-                onChange={(pts) => setAiSegments((prev) => ({ ...prev, [editingSurfaceId]: pts }))}
+                onChange={(pts) => {
+                  delete wandMasksRef.current[editingSurfaceId];
+                  setAiSegments((prev) => ({ ...prev, [editingSurfaceId]: pts }));
+                }}
               />
             </div>
           ) : (
             <div
-              className="relative aspect-[16/10] overflow-hidden bg-stone-200 mb-6"
-              style={uploadMode && imageAspect ? { aspectRatio: `${imageAspect}` } : undefined}
+              className="relative overflow-hidden bg-stone-200 mb-6"
+              style={{ aspectRatio: `${displayAspect}` }}
             >
               <img src={roomImage} alt="Room" className="w-full h-full object-cover" />
               {surfaces.map((surface) => {
@@ -911,6 +1278,9 @@ export function VisualizerPage() {
 
           {/* Material Grid */}
           <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-6 gap-3 md:gap-4 max-h-[500px] overflow-y-auto">
+            {filteredMaterials.length === 0 && (
+              <p className="col-span-full py-10 text-center text-sm text-stone-500">{t('vzMaterialsEmpty')}</p>
+            )}
             {filteredMaterials.map((m) => (
               <button
                 key={m.id}
@@ -922,7 +1292,7 @@ export function VisualizerPage() {
                   selectedMaterialId === m.id ? 'border-stone-900' : 'border-transparent hover:border-stone-300'
                 }`}
               >
-                <LazyImage src={m.textureUrl} alt={m.name} aspectClass="aspect-square" className="transition-transform duration-300 group-hover:scale-110" />
+                <LazyImage src={thumbUrl(m.textureUrl, 240)} alt={m.name} aspectClass="aspect-square" className="transition-transform duration-300 group-hover:scale-110" />
                 <div className="absolute bottom-0 left-0 right-0 p-2 bg-stone-950/60">
                   <p className="text-white text-xs font-light truncate">{m.name}</p>
                 </div>
@@ -946,26 +1316,61 @@ export function VisualizerPage() {
                   <Sparkles size={13} strokeWidth={1.5} /> {aiApplying ? t('aiEditing') : t('aiEditButton')}
                 </button>
               )}
-              <button onClick={() => setZoom(zoom === 1 ? 1.5 : 1)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
-                <ZoomIn size={13} strokeWidth={1.5} /> {t('reset')}
+              <button
+                onClick={() => { setZoom(zoom === 1 ? 2 : 1); setZoomOrigin({ x: 50, y: 50 }); }}
+                aria-pressed={zoom > 1}
+                className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors"
+              >
+                {zoom > 1 ? <ZoomOut size={13} strokeWidth={1.5} /> : <ZoomIn size={13} strokeWidth={1.5} />}
+                {zoom > 1 ? t('vzZoomOut') : t('vzZoomIn')}
               </button>
-              <button onClick={() => { setStep('room'); setUploadedImage(null); setUploadMode(false); setSelectedMaterialId(null); setShowOriginal(false);           setCompositeUrl(null);
-          setAiResultUrl(null);
-          aiAppliedRef.current = null;
-          setSourceRegion(null);
-          setShowCompare(false);
-          setCompareSplit(0.5); }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
-                <RotateCcw size={13} strokeWidth={1.5} /> {t('reset')}
+              <button onClick={startOver} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
+                <RotateCcw size={13} strokeWidth={1.5} /> {t('vzStartOver')}
               </button>
-              <button onClick={() => setShowOriginal((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
+              <button
+                onClick={() => { setShowOriginal((v) => !v); setShowCompare(false); }}
+                aria-pressed={showOriginal}
+                className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors"
+              >
                 {showOriginal ? t('aiEditResult') : t('originalImage')}
               </button>
-              <button onClick={() => setShowCompare((v) => !v)} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors">
-                {showCompare ? 'Hide Before/After' : 'Before / After'}
-              </button>
+              {allowCompare && (
+                <button
+                  onClick={() => { setShowCompare((v) => !v); setShowOriginal(false); }}
+                  disabled={!resultImageUrl}
+                  aria-pressed={showCompare}
+                  className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors disabled:opacity-40"
+                >
+                  <Columns2 size={13} strokeWidth={1.5} />
+                  {showCompare ? t('vzHideCompare') : `${t('before')} / ${t('after')}`}
+                </button>
+              )}
+              {allowCompare && selectedMaterial && (
+                pinned && pinned.key === pinScope ? (
+                  <button
+                    onClick={() => setPinned(null)}
+                    className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 hover:bg-stone-900 hover:text-ivory transition-colors"
+                  >
+                    <PinOff size={13} strokeWidth={1.5} /> {t('vzUnpin')}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      if (!resultImageUrl) return;
+                      setPinned({ url: resultImageUrl, name: selectedMaterial.name, key: pinScope });
+                      setShowCompare(true);
+                      setShowOriginal(false);
+                    }}
+                    disabled={!resultImageUrl || aiApplying}
+                    className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-300 px-3 py-2 hover:border-stone-900 transition-colors disabled:opacity-40"
+                  >
+                    <Pin size={13} strokeWidth={1.5} /> {t('vzPinCompare')}
+                  </button>
+                )
+              )}
               {aiResultUrl && (
                 <button onClick={() => { setAiResultUrl(null); setShowCompare(false); }} className="flex items-center gap-1.5 text-xs tracking-wider uppercase border border-stone-900 px-3 py-2 hover:bg-stone-900 hover:text-ivory transition-colors">
-                  <Check size={13} strokeWidth={1.5} /> Precise render
+                  <Check size={13} strokeWidth={1.5} /> {t('vzPreciseRender')}
                 </button>
               )}
             </div>
@@ -974,14 +1379,39 @@ export function VisualizerPage() {
           {/* Visualizer Canvas */}
           <div
             ref={resultRef}
-            className="relative aspect-[16/10] overflow-hidden bg-stone-200"
-            style={uploadMode && imageAspect ? { transform: `scale(${zoom})`, transformOrigin: 'center', aspectRatio: `${imageAspect}` } : { transform: `scale(${zoom})`, transformOrigin: 'center' }}
+            className={`relative overflow-hidden bg-stone-200 ${zoom > 1 ? 'cursor-zoom-out touch-none' : ''}`}
+            style={{ aspectRatio: `${displayAspect}` }}
+            onPointerMove={(e) => {
+              if (zoom <= 1) return;
+              const r = e.currentTarget.getBoundingClientRect();
+              setZoomOrigin({
+                x: Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100)),
+                y: Math.max(0, Math.min(100, ((e.clientY - r.top) / r.height) * 100)),
+              });
+            }}
           >
+            <div
+              className="absolute inset-0 transition-transform duration-200 ease-out"
+              style={{ transform: `scale(${zoom})`, transformOrigin: `${zoomOrigin.x}% ${zoomOrigin.y}%` }}
+            >
             <img
-              src={showOriginal ? (roomImage ?? undefined) : (aiResultUrl ?? compositeUrl ?? roomImage ?? undefined)}
+              src={showOriginal ? (roomImage ?? undefined) : (resultImageUrl ?? roomImage ?? undefined)}
               alt="Room"
               className="absolute inset-0 w-full h-full object-cover"
+              draggable={false}
             />
+            {/* Before/After: the result stays underneath; the original photo is
+                revealed on the start side of the handle. */}
+            {!showOriginal && showCompare && resultImageUrl && roomImage && (
+              <img
+                src={activePin?.url ?? roomImage}
+                alt="Before"
+                className="absolute inset-0 w-full h-full object-cover"
+                style={{ clipPath: `polygon(0 0, ${compareSplit * 100}% 0, ${compareSplit * 100}% 100%, 0 100%)` }}
+                draggable={false}
+              />
+            )}
+            </div>
               {aiApplying && (
                 <div className="absolute inset-0 flex items-center justify-center bg-stone-950/40">
                   <span className="flex items-center gap-2 text-xs tracking-wider uppercase text-white">
@@ -990,22 +1420,18 @@ export function VisualizerPage() {
                   </span>
                 </div>
               )}
-              {/* Before/After slider overlay (works with AI or deterministic result) */}
-              {!showOriginal && showCompare && compositeUrl && (
-                <div className="absolute inset-0">
-                  <img
-                    src={aiResultUrl ?? compositeUrl ?? undefined}
-                    alt="After"
-                    className="absolute inset-0 w-full h-full object-cover"
-                    style={{
-                      clipPath: `polygon(${compareSplit * 100}% 0, 100% 0, 100% 100%, ${compareSplit * 100}% 100%)`,
-                    }}
-                  />
-                  <img
-                    src={roomImage ?? undefined}
-                    alt="Before"
-                    className="absolute inset-0 w-full h-full object-cover opacity-80"
-                  />
+              {/* Before/After handle. dir="ltr" keeps the range value and the
+                  clip in the same direction on the Arabic (RTL) page. */}
+              {!showOriginal && showCompare && resultImageUrl && zoom === 1 && (
+                <div className="absolute inset-0" dir="ltr">
+                  <div
+                    className="absolute inset-y-0 w-0.5 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.25)] pointer-events-none"
+                    style={{ left: `calc(${compareSplit * 100}% - 1px)` }}
+                  >
+                    <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-full bg-white text-stone-900 shadow-md">
+                      <ChevronsLeftRight size={16} strokeWidth={1.75} />
+                    </span>
+                  </div>
                   <input
                     type="range"
                     min={0}
@@ -1013,15 +1439,12 @@ export function VisualizerPage() {
                     step={0.001}
                     value={compareSplit}
                     onChange={(e) => setCompareSplit(Number(e.target.value))}
-                    className="absolute top-1/2 left-0 -translate-y-1/2 w-full h-0.5 bg-white/60 accent-stone-900"
-                    style={{ touchAction: 'pan-x' }}
+                    aria-label={`${t('before')} / ${t('after')}`}
+                    className="absolute inset-0 h-full w-full cursor-ew-resize opacity-0"
+                    style={{ touchAction: 'pan-y' }}
                   />
-                  <div
-                    className="absolute top-1/2 -translate-y-1/2 w-px h-10 bg-white"
-                    style={{ left: `${compareSplit * 100}%` }}
-                  />
-                  <span className="absolute top-3 left-3 text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">Before</span>
-                  <span className="absolute top-3 right-3 text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">After</span>
+                  <span className="pointer-events-none absolute top-3 left-3 max-w-[45%] truncate text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">{activePin ? activePin.name : t('before')}</span>
+                  <span className="pointer-events-none absolute top-3 right-3 max-w-[45%] truncate text-[11px] uppercase tracking-wider text-white bg-stone-950/60 px-2 py-1">{activePin ? selectedMaterial?.name : t('after')}</span>
                 </div>
               )}
               {/* Labels */}
@@ -1034,11 +1457,11 @@ export function VisualizerPage() {
               )}
               {!showOriginal && !aiResultUrl && compositeUrl && (
                     <span className="text-xs tracking-wider uppercase text-white bg-stone-900 px-3 py-1.5">
-                      {textureParams.lightingMode === 'realistic' ? 'Realistic' : 'Neutral'}
+                      {textureParams.lightingMode === 'realistic' ? t('vzLightingRealistic') : t('vzLightingNeutral')}
                     </span>
                   )}
                   {sourceRegion && !showOriginal && compositeUrl && (
-                    <span className="text-xs tracking-wider uppercase text-white bg-stone-900/80 px-3 py-1.5">Slab cut</span>
+                    <span className="text-xs tracking-wider uppercase text-white bg-stone-900/80 px-3 py-1.5">{t('vzSlabCut')}</span>
                   )}
               {showOriginal && (
                 <span className="text-xs tracking-wider uppercase text-white bg-stone-950/60 px-3 py-1.5">{t('originalImage')}</span>
@@ -1046,18 +1469,64 @@ export function VisualizerPage() {
             </div>
           </div>
 
-          {renderError && <p className="mt-3 text-xs text-red-700">Could not render the texture.</p>}
-          {aiApplyError && <p className="mt-3 text-xs text-red-700">{editEnabled ? t('aiEditFailed') : t('aiEditUnavailable')}</p>}
+          {/* Quick material switch: try materials without leaving the result */}
+          {visMaterials.length > 1 && (
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between gap-3 text-[11px] tracking-[0.15em] uppercase text-stone-500">
+                <span>{t('vzQuickSwitch')}</span>
+                <span className="hidden md:inline normal-case tracking-normal text-stone-400">
+                  {pinned && pinned.key === pinScope && !activePin
+                    ? t('vzPinnedHint').replace('{name}', pinned.name)
+                    : t('vzKeyboardHint')}
+                </span>
+              </div>
+              <div ref={stripRef} className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide" role="listbox" aria-label={t('vzQuickSwitch')}>
+                {visMaterials.map((m) => {
+                  const active = m.id === selectedMaterialId;
+                  return (
+                    <button
+                      key={m.id}
+                      data-mat={m.id}
+                      role="option"
+                      aria-selected={active}
+                      title={m.name}
+                      onClick={() => setSelectedMaterialId(m.id)}
+                      className={`relative shrink-0 h-16 w-16 md:h-20 md:w-20 overflow-hidden border-2 transition-all ${active ? 'border-stone-900' : 'border-transparent opacity-80 hover:opacity-100 hover:border-stone-300'}`}
+                    >
+                      <img src={thumbUrl(m.textureUrl, 96)} alt={m.name} loading="lazy" className="h-full w-full object-cover" draggable={false} />
+                      {pinned && pinned.key === pinScope && pinned.name === m.name && (
+                        <span className="absolute top-1 end-1 rounded-full bg-stone-900 p-0.5 text-ivory"><Pin size={10} strokeWidth={2} /></span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {renderError && (
+            <p className="mt-3 flex items-center gap-3 text-xs text-red-700">
+              {t('vzRenderFailed')}
+              <button onClick={() => { setRenderError(false); void renderCompositeRef.current(1100); }} className="underline">{t('vzRetry')}</button>
+            </p>
+          )}
+          {aiApplyError && (
+            <p className="mt-3 flex items-center gap-3 text-xs text-red-700">
+              {editEnabled ? t('aiEditFailed') : t('aiEditUnavailable')}
+              {editEnabled && <button onClick={() => void applyWithAi()} className="underline">{t('vzRetry')}</button>}
+            </p>
+          )}
+          {exportError && <p className="mt-3 text-xs text-red-700">{t('vzExportFailed')}</p>}
 
               {/* Slab cutting planner (select a region of the source material) */}
               {!aiResultUrl && selectedMaterial && (
                 <div className="mt-6 border border-stone-200 bg-ivory p-5">
                   <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-stone-800">Slab Cutting Planner</h3>
-                    <span className="text-[11px] uppercase tracking-wider text-stone-500">Use only a cut from the slab</span>
+                    <h3 className="text-sm font-semibold text-stone-800">{t('vzSlabPlanner')}</h3>
+                    <span className="text-[11px] uppercase tracking-wider text-stone-500">{t('vzSlabPlannerTag')}</span>
                   </div>
                   <p className="text-xs text-stone-600 mb-3">
-                    Drag to set the normalized region of the material texture to use for the entire surface. Leave clear to use the full slab.
+                    {t('vzSlabPlannerHint')}
                   </p>
                   <div className="grid gap-4 md:grid-cols-[240px,1fr]">
                     <div className="relative w-full aspect-square border border-stone-300 bg-stone-100 overflow-hidden">
@@ -1080,8 +1549,8 @@ export function VisualizerPage() {
                     </div>
                     <div className="flex flex-col gap-2">
                       <label className="text-xs text-stone-600">
-                        <span className="mb-1 block">Region X · Y · W · H (0..1)</span>
-                        <div className="grid grid-cols-4 gap-2">
+                        <span className="mb-1 block">{t('vzSlabRegion')}</span>
+                        <div className="grid grid-cols-4 gap-2" dir="ltr">
                           <input type="number" step={0.01} min={0} max={1} className="border border-stone-300 px-2 py-1.5 text-sm" value={sourceRegion?.x ?? 0} onChange={(e) => {
                             const v = Math.max(0, Math.min(1, Number(e.target.value)));
                             setSourceRegion({ x: v, y: sourceRegion?.y ?? 0, w: sourceRegion?.w ?? 0.5, h: sourceRegion?.h ?? 0.5 });
@@ -1101,13 +1570,13 @@ export function VisualizerPage() {
                         </div>
                       </label>
                       <div className="flex flex-wrap gap-2">
-                        <button onClick={() => setSourceRegion(null)} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">Clear cut</button>
-                        <button onClick={() => setSourceRegion({ x: 0, y: 0, w: 0.5, h: 0.5 })} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">Half slab</button>
-                        <button onClick={() => setSourceRegion({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 })} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">Center 50%</button>
+                        <button onClick={() => setSourceRegion(null)} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">{t('vzClearCut')}</button>
+                        <button onClick={() => setSourceRegion({ x: 0, y: 0, w: 0.5, h: 0.5 })} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">{t('vzHalfSlab')}</button>
+                        <button onClick={() => setSourceRegion({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 })} className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900">{t('vzCenter50')}</button>
                       </div>
                       <div className="text-xs text-stone-600">
-                        <span className="uppercase tracking-wider mr-1">Mode</span>
-                        {sourceRegion ? 'Cut region only' : 'Full slab'}
+                        <span className="uppercase tracking-wider me-1">{t('vzMode')}</span>
+                        {sourceRegion ? t('vzCutOnly') : t('vzFullSlab')}
                       </div>
                     </div>
                   </div>
@@ -1117,17 +1586,17 @@ export function VisualizerPage() {
             <div className="mt-6 border border-stone-200 bg-ivory p-5">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-stone-800">
-                  {lang === 'ar' ? 'التركيب الحقيقي' : 'Realistic installation'}
+                  {t('vzRealisticInstall')}
                 </h3>
                 <span className="text-[11px] uppercase tracking-wider text-stone-500">
-                  {textureParams.lightingMode === 'realistic' ? 'Realistic lighting' : 'Neutral lighting'}
+                  {textureParams.lightingMode === 'realistic' ? t('vzLightingRealistic') : t('vzLightingNeutral')}
                 </span>
               </div>
 
               {/* Material dimensions (default from the product) */}
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Piece width (cm)</span>
+                  <span className="mb-1 block">{t('vzPieceWidth')}</span>
                   <input
                     type="number" min={1}
                     className="w-full border border-stone-300 px-2 py-1.5 text-sm"
@@ -1136,7 +1605,7 @@ export function VisualizerPage() {
                   />
                 </label>
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Piece height (cm)</span>
+                  <span className="mb-1 block">{t('vzPieceHeight')}</span>
                   <input
                     type="number" min={1}
                     className="w-full border border-stone-300 px-2 py-1.5 text-sm"
@@ -1154,11 +1623,11 @@ export function VisualizerPage() {
                     })}
                     className="w-full border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900"
                   >
-                    Orientation · 90°
+                    {t('vzOrientation')}
                   </button>
                 </div>
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Rotation (deg)</span>
+                  <span className="mb-1 block">{t('vzRotation')}</span>
                   <input
                     type="number"
                     className="w-full border border-stone-300 px-2 py-1.5 text-sm"
@@ -1170,21 +1639,21 @@ export function VisualizerPage() {
 
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mt-4">
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Installation pattern</span>
+                  <span className="mb-1 block">{t('vzPattern')}</span>
                     <select
                      className="w-full border border-stone-300 px-2 py-1.5 text-sm"
                      value={textureParams.pattern}
                      onChange={(e) => setTextureParams({ ...textureParams, pattern: e.target.value as InstallPattern })}
                    >
-                     <option value="stack">Straight lay</option>
-                     <option value="running-bond">Running bond (½)</option>
-                     <option value="third-bond">Third bond (⅓)</option>
-                     <option value="bookmatch">Bookmatch (2-panel)</option>
-                     <option value="bookmatch-4">Bookmatch (4-panel)</option>
+                     <option value="stack">{t('vzPatStack')}</option>
+                     <option value="running-bond">{t('vzPatRunning')}</option>
+                     <option value="third-bond">{t('vzPatThird')}</option>
+                     <option value="bookmatch">{t('vzPatBook2')}</option>
+                     <option value="bookmatch-4">{t('vzPatBook4')}</option>
                    </select>
                 </label>
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Joint width (mm)</span>
+                  <span className="mb-1 block">{t('vzJointWidth')}</span>
                   <input
                     type="number" min={0} step={0.5}
                     className="w-full border border-stone-300 px-2 py-1.5 text-sm"
@@ -1193,7 +1662,7 @@ export function VisualizerPage() {
                   />
                 </label>
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Joint color</span>
+                  <span className="mb-1 block">{t('vzJointColor')}</span>
                   <input
                     type="color"
                     className="h-9 w-full border border-stone-300"
@@ -1202,7 +1671,7 @@ export function VisualizerPage() {
                   />
                 </label>
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Pattern scale</span>
+                  <span className="mb-1 block">{t('vzPatternScale')}</span>
                   <input
                     type="number" min={0.1} step={0.1}
                     className="w-full border border-stone-300 px-2 py-1.5 text-sm"
@@ -1214,7 +1683,7 @@ export function VisualizerPage() {
 
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mt-4">
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Offset X (pieces)</span>
+                  <span className="mb-1 block">{t('vzOffsetX')}</span>
                   <input
                     type="number" step={0.1}
                     className="w-full border border-stone-300 px-2 py-1.5 text-sm"
@@ -1223,7 +1692,7 @@ export function VisualizerPage() {
                   />
                 </label>
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Offset Y (pieces)</span>
+                  <span className="mb-1 block">{t('vzOffsetY')}</span>
                   <input
                     type="number" step={0.1}
                     className="w-full border border-stone-300 px-2 py-1.5 text-sm"
@@ -1232,7 +1701,7 @@ export function VisualizerPage() {
                   />
                 </label>
                 <label className="block text-xs text-stone-600">
-                  <span className="mb-1 block">Lighting strength</span>
+                  <span className="mb-1 block">{t('vzLightingStrength')}</span>
                   <input
                     type="range" min={0} max={1} step={0.05}
                     className="w-full"
@@ -1242,7 +1711,7 @@ export function VisualizerPage() {
                 </label>
                 {surfaceKindFor(selectedSurfaceId || '') === 'countertop' && (
                   <label className="block text-xs text-stone-600">
-                    <span className="mb-1 block">Edge thickness (cm)</span>
+                    <span className="mb-1 block">{t('vzEdgeThickness')}</span>
                     <input
                       type="number" min={0} step={0.5}
                       className="w-full border border-stone-300 px-2 py-1.5 text-sm"
@@ -1260,25 +1729,25 @@ export function VisualizerPage() {
                     checked={textureParams.lightingMode === 'realistic'}
                     onChange={(e) => setTextureParams({ ...textureParams, lightingMode: e.target.checked ? 'realistic' : 'neutral' })}
                   />
-                  Realistic lighting
+                  {t('vzLightingRealistic')}
                 </label>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" checked={textureParams.flipX} onChange={(e) => setTextureParams({ ...textureParams, flipX: e.target.checked })} />
-                  Flip horizontal
+                  {t('vzFlipH')}
                 </label>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" checked={textureParams.flipY} onChange={(e) => setTextureParams({ ...textureParams, flipY: e.target.checked })} />
-                  Flip vertical
+                  {t('vzFlipV')}
                 </label>
                 <label className="flex items-center gap-2">
-                  Sampling
+                  {t('vzSampling')}
                   <select
                     className="border border-stone-300 px-2 py-1"
                     value={textureParams.sampling}
                     onChange={(e) => setTextureParams({ ...textureParams, sampling: e.target.value as 'nearest' | 'bilinear' })}
                   >
-                    <option value="bilinear">Bilinear</option>
-                    <option value="nearest">Nearest (exact)</option>
+                    <option value="bilinear">{t('vzSamplingBilinear')}</option>
+                    <option value="nearest">{t('vzSamplingNearest')}</option>
                   </select>
                 </label>
               </div>
@@ -1287,19 +1756,19 @@ export function VisualizerPage() {
               {installStats && (
                 <div className="mt-5 border-t border-stone-200 pt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-stone-700">
                   <div>
-                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">Surface</span>
+                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">{t('vzStatSurface')}</span>
                     <span className="text-stone-900">{installStats.surfaceAreaM2.toFixed(1)} m²</span>
                   </div>
                   <div>
-                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">Pieces</span>
+                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">{t('vzStatPieces')}</span>
                     <span className="text-stone-900">{installStats.piecesTotal} ({installStats.piecesX}×{installStats.piecesY})</span>
                   </div>
                   <div>
-                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">Laid area</span>
+                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">{t('vzStatLaid')}</span>
                     <span className="text-stone-900">{installStats.laidAreaM2.toFixed(1)} m²</span>
                   </div>
                   <div>
-                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">Est. waste</span>
+                    <span className="block text-[10px] uppercase tracking-wider text-stone-500">{t('vzStatWaste')}</span>
                     <span className="text-stone-900">{installStats.wastePct.toFixed(1)}%</span>
                   </div>
                 </div>
@@ -1308,24 +1777,24 @@ export function VisualizerPage() {
               {/* Room scale / calibration */}
               <div className="mt-5 border-t border-stone-200 pt-4 flex flex-wrap items-center justify-between gap-3">
                 <div className="text-xs text-stone-600">
-                  <span className="uppercase tracking-wider mr-2">Room scale</span>
+                  <span className="uppercase tracking-wider me-2">{t('vzRoomScale')}</span>
                   {calibPxPerMeter
-                    ? <span className="text-stone-900">Calibrated · {calibPxPerMeter.toFixed(0)} px/m</span>
-                    : <span className="text-stone-500">Estimated — calibrate for exact size</span>}
+                    ? <span className="text-stone-900">{t('vzCalibrated')} · {calibPxPerMeter.toFixed(0)} px/m</span>
+                    : <span className="text-stone-500">{t('vzEstimatedScale')}</span>}
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => { setCalibPoints([]); setCalibOpen(true); }}
                     className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900"
                   >
-                    Calibrate scale
+                    {t('vzCalibrate')}
                   </button>
                   {calibPxPerMeter && (
                     <button
                       onClick={() => setCalibPxPerMeter(null)}
                       className="border border-stone-300 px-3 py-1.5 text-xs uppercase tracking-wider hover:border-stone-900"
                     >
-                      Clear
+                      {t('vzClear')}
                     </button>
                   )}
                 </div>
@@ -1336,7 +1805,7 @@ export function VisualizerPage() {
           {/* Selected Material Panel */}
           <div className="mt-8 bg-ivory p-6 md:p-8 border border-stone-200">
             <div className="flex flex-col md:flex-row gap-6 items-start">
-              <LazyImage src={selectedMaterial.textureUrl} alt={selectedMaterial.name} aspectClass="w-24 h-24 shrink-0" />
+              <LazyImage src={thumbUrl(selectedMaterial.textureUrl, 120)} alt={selectedMaterial.name} aspectClass="w-24 h-24 shrink-0" />
               <div className="flex-1">
                 <p className="text-xs tracking-[0.2em] uppercase text-stone-500 mb-1">{t('selectedMaterial')}</p>
                 <h3 className="font-display text-2xl font-light text-stone-900 mb-2">{selectedMaterial.name}</h3>
@@ -1361,10 +1830,13 @@ export function VisualizerPage() {
             <div className="flex flex-wrap gap-3 mt-6 pt-6 border-t border-stone-200">
               <button
                 onClick={() => {
+                  setSavedAdded(!has(selectedMaterial.id));
                   toggle(selectedMaterial.id);
                   setShowSaved(true);
-                  setTimeout(() => setShowSaved(false), 2000);
+                  if (savedTimerRef.current) window.clearTimeout(savedTimerRef.current);
+                  savedTimerRef.current = window.setTimeout(() => setShowSaved(false), 2000);
                 }}
+                aria-pressed={has(selectedMaterial.id)}
                 className="flex items-center gap-2 text-xs tracking-wider uppercase text-stone-600 hover:text-stone-900 transition-colors"
               >
                 <Heart size={14} strokeWidth={1.5} fill={has(selectedMaterial.id) ? 'currentColor' : 'none'} className={has(selectedMaterial.id) ? 'text-accent' : ''} />
@@ -1386,8 +1858,8 @@ export function VisualizerPage() {
           </div>
 
           {showSaved && (
-            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-stone-900 text-ivory px-6 py-3 text-sm tracking-wider z-50">
-              {t('saveDesign')}
+            <div role="status" className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-stone-900 text-ivory px-6 py-3 text-sm tracking-wider z-50">
+              {savedAdded ? t('vzSavedFav') : t('vzRemovedFav')}
             </div>
           )}
         </div>

@@ -697,7 +697,7 @@ export function measureSurfacePhysical(opts: {
   pxPerMeter: number;
   imageWidth: number;
   imageHeight: number;
-}): { widthM: number; heightM: number; areaM2: number } | null {
+}): { widthM: number; heightM: number; areaM2: number; coverage: number } | null {
   const { polygon, pxPerMeter, imageWidth, imageHeight } = opts;
   if (polygon.length < 3 || !imageWidth || !imageHeight || !pxPerMeter) return null;
   const poly = polygon.map((p) => ({ x: p.x * imageWidth, y: p.y * imageHeight }));
@@ -710,7 +710,21 @@ export function measureSurfacePhysical(opts: {
   const heightPx = (leftH + rightH) / 2;
   const widthM = Math.max(0.01, widthPx / pxPerMeter);
   const heightM = Math.max(0.01, heightPx / pxPerMeter);
-  return { widthM, heightM, areaM2: widthM * heightM };
+  // Share of the fitted quad the real surface covers. Signed shoelace area:
+  // holes are wound opposite to their outline and extra pieces the same way
+  // (see magicWand.ts), so cut-outs subtract and pieces add up.
+  const shoelace = (pts: Pt[]): number => {
+    let a = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const q = pts[(i + 1) % pts.length];
+      a += p.x * q.y - q.x * p.y;
+    }
+    return Math.abs(a) / 2;
+  };
+  const quadArea = shoelace(quad);
+  const coverage = quadArea > 0 ? Math.max(0.02, Math.min(1, shoelace(poly) / quadArea)) : 1;
+  return { widthM, heightM, areaM2: widthM * heightM * coverage, coverage };
 }
 
 /**
@@ -723,6 +737,8 @@ export function computeInstallStats(opts: {
   surfaceHeightM: number;
   pieceWidthM: number;
   pieceHeightM: number;
+  /** Share (0..1] of the width × height rectangle the real surface covers. */
+  coverage?: number;
 }): {
   piecesX: number;
   piecesY: number;
@@ -737,8 +753,10 @@ export function computeInstallStats(opts: {
   const ph = Math.max(0.01, opts.pieceHeightM);
   const piecesX = Math.max(1, Math.ceil(sw / pw - 1e-6));
   const piecesY = Math.max(1, Math.ceil(sh / ph - 1e-6));
-  const piecesTotal = piecesX * piecesY;
-  const surfaceAreaM2 = sw * sh;
+  const coverage = Math.max(0.02, Math.min(1, opts.coverage ?? 1));
+  // Irregular surfaces (cut-outs, L-shapes) need only the pieces they touch.
+  const piecesTotal = Math.max(1, Math.ceil(piecesX * piecesY * coverage - 1e-6));
+  const surfaceAreaM2 = sw * sh * coverage;
   const laidAreaM2 = piecesTotal * pw * ph;
   const wastePct = laidAreaM2 > 0 ? Math.max(0, ((laidAreaM2 - surfaceAreaM2) / laidAreaM2) * 100) : 0;
   return { piecesX, piecesY, piecesTotal, surfaceAreaM2, laidAreaM2, wastePct };
