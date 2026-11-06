@@ -13,7 +13,6 @@ import {
 
 import { analyzeRoomPhoto } from '@/lib/visualizer/imageAnalysis';
 import {
-  renderSurfaceTexture,
   loadImage,
   parseClipPath,
   paramsFromMaterial,
@@ -33,6 +32,7 @@ import type { RoomLayout, Step, VisMaterial, NormalizedPoint, SurfaceKind } from
 import { AIAnalyzeButton } from '@/components/visualizer/AIAnalyzeButton';
 import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 import { thumbUrl } from '@/lib/visualizer/thumb';
+import { renderSurfaceTextureAsync } from '@/lib/visualizer/textureRenderClient';
 import {
   prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon, polygonToMask,
   type WandImage, type WandMode,
@@ -559,7 +559,7 @@ export function VisualizerPage() {
       // wrong whenever the cover crop trims the photo's width).
       const coverScale = Math.max(box.width / imageW, box.height / imageH);
       const boxPpm = ppmBase * coverScale;
-      const canvas = renderSurfaceTexture({
+      const canvas = await renderSurfaceTextureAsync({
         roomImage: box,
         polygon,
         texture,
@@ -569,7 +569,10 @@ export function VisualizerPage() {
       });
       if (!isCurrent()) return canvas;
       compositeCanvasRef.current = canvas;
-      setCompositeUrl(canvas.toDataURL('image/png'));
+      // toBlob encodes off the main thread (toDataURL blocked ~100 ms per render).
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (!isCurrent()) return canvas;
+      if (blob) setCompositeObjectUrl(URL.createObjectURL(blob));
       setRenderError(false);
       // Coverage / waste readout from the same physical measurement the render uses.
       const measured = measureSurfacePhysical({
@@ -690,6 +693,29 @@ export function VisualizerPage() {
     setAiApplying(false);
     if (editEnabled) void applyWithAiRef.current();
   }, [step, editEnabled, selectedRoomId, selectedSurfaceId, selectedMaterialId, roomImage]);
+
+  /**
+   * Composite object URLs: the previous one is revoked once replaced, unless it
+   * is the pinned comparison image; everything is revoked on unmount.
+   */
+  const objectUrlsRef = useRef<Set<string>>(new Set());
+  const pinnedUrlRef = useRef<string | null>(null);
+  pinnedUrlRef.current = pinned?.url ?? null;
+  const setCompositeObjectUrl = (url: string) => {
+    objectUrlsRef.current.add(url);
+    setCompositeUrl((prev) => {
+      if (prev && prev.startsWith('blob:') && prev !== pinnedUrlRef.current) {
+        const old = prev;
+        // Revoke after the new image has had time to paint.
+        window.setTimeout(() => { URL.revokeObjectURL(old); objectUrlsRef.current.delete(old); }, 2000);
+      }
+      return url;
+    });
+  };
+  useEffect(() => () => {
+    for (const u of objectUrlsRef.current) URL.revokeObjectURL(u);
+    objectUrlsRef.current.clear();
+  }, []);
 
   /** What the result step shows: the AI image when present, else the engine composite. */
   const resultImageUrl = aiResultUrl ?? compositeUrl;
