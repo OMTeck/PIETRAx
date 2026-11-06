@@ -34,6 +34,8 @@ import { PolygonEditor } from '@/components/visualizer/PolygonEditor';
 import { thumbUrl } from '@/lib/visualizer/thumb';
 import { renderSurfaceTextureAsync } from '@/lib/visualizer/textureRenderClient';
 import { LiveCamera, type LiveCapture } from '@/components/visualizer/LiveCamera';
+import { ArMode } from '@/components/visualizer/ArMode';
+import { isArSupported } from '@/lib/visualizer/arSession';
 import {
   prepareWandImage, floodSelect, combineMasks, finalizeMask, maskToPolygon, polygonToMask,
   type WandImage, type WandMode,
@@ -155,6 +157,8 @@ export function VisualizerPage() {
   const [exportError, setExportError] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [liveOpen, setLiveOpen] = useState(false);
+  /** True AR (WebXR immersive-ar) available on this device. */
+  const [arSupported, setArSupported] = useState(false);
   /** Area tracked in live mode, applied once the captured frame is in place. */
   const pendingLiveRef = useRef<Partial<Record<string, NormalizedPoint[]>> | null>(null);
   /** A pinned result (another material) the compare slider shows instead of the photo. */
@@ -421,6 +425,13 @@ export function VisualizerPage() {
     closeCamera();
     applyRoomImage(dataUrl);
   };
+
+  useEffect(() => {
+    if (!allowLiveCamera) return;
+    let alive = true;
+    void isArSupported().then((ok) => { if (alive) setArSupported(ok); });
+    return () => { alive = false; };
+  }, [allowLiveCamera]);
 
   // Never leave the camera running after the visitor navigates away.
   useEffect(() => () => {
@@ -1063,7 +1074,20 @@ export function VisualizerPage() {
                 <p className="text-sm text-stone-500">{t('cameraHint')}</p>
               </button>
             </div>
-            {allowLiveCamera && (
+            {allowLiveCamera && arSupported && (
+              <ArMode
+                materials={visMaterials}
+                initialMaterialId={selectedMaterialId}
+                t={t}
+                onUnavailable={() => { setArSupported(false); setLiveOpen(true); }}
+              />
+            )}
+            {allowLiveCamera && arSupported && (
+              <button onClick={() => setLiveOpen(true)} className="mb-8 text-xs tracking-wider uppercase text-stone-500 underline hover:text-stone-900">
+                {t('vzLiveSimple')}
+              </button>
+            )}
+            {allowLiveCamera && !arSupported && (
               <button
                 onClick={() => setLiveOpen(true)}
                 className="-mt-4 mb-8 flex w-full items-center gap-4 border-2 border-stone-900 bg-stone-900 p-5 text-start text-ivory transition-colors hover:bg-stone-800 md:p-6"
