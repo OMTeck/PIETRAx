@@ -118,6 +118,7 @@ export function VisualizerSettingsPanel() {
           <Toggle checked={s.features.allowExport} onChange={(v) => setFeatures({ allowExport: v })} label="Allow download / share" />
           <Toggle checked={s.features.allowCompare} onChange={(v) => setFeatures({ allowCompare: v })} label="Allow A / B compare" />
           <Toggle checked={s.features.allowManualAreaEdit} onChange={(v) => setFeatures({ allowManualAreaEdit: v })} label="Allow manual area editing" />
+          <Toggle checked={s.features.allowLiveCamera !== false} onChange={(v) => setFeatures({ allowLiveCamera: v })} label="Allow live camera (material on live video)" />
         </div>
       </Card>
 

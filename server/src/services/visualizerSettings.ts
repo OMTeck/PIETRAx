@@ -94,6 +94,7 @@ export const visualizerSettingsSchema = z.object({
       allowExport: z.boolean().default(true),
       allowCompare: z.boolean().default(true),
       allowManualAreaEdit: z.boolean().default(true),
+      allowLiveCamera: z.boolean().default(true),
     })
     .default({}),
   analysis: z
@@ -222,6 +223,7 @@ function buildDefaults(): VisualizerSettings {
       allowExport: true,
       allowCompare: true,
       allowManualAreaEdit: true,
+      allowLiveCamera: true,
     },
     analysis: {
       enabled: config.roboflow.enabled,

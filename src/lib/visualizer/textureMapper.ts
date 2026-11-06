@@ -343,48 +343,38 @@ function boxBlur(src: Float32Array, w: number, h: number, r: number): Float32Arr
   return out;
 }
 
+
+/** Plain pixel inputs for the render core (no DOM): runs on the main thread or in a worker. */
+export interface RenderPixelsInput {
+  /** Room RGBA pixels, W×H×4. Modified in place. */
+  pixels: Uint8ClampedArray;
+  W: number;
+  H: number;
+  /** Texture RGBA pixels, texW×texH×4. */
+  texData: Uint8ClampedArray;
+  texW: number;
+  texH: number;
+  polygon: NormalizedPoint[];
+  params: TextureMapParams;
+  pxPerMeter: number;
+  /** Downscale applied to the room image before rendering (scales pxPerMeter). */
+  scale: number;
+  surfaceKind?: SurfaceKind;
+}
+
 /**
- * Renders the material onto the room image inside `polygon` as a realistic
- * installation. Returns a new canvas; the inputs are not modified.
+ * The render core: dresses `pixels` with the material inside `polygon`.
+ * Pure array maths so it can run in a Web Worker (see textureWorker.ts).
  */
-export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElement {
-  const { roomImage, polygon, texture, params, pxPerMeter, maxDimension, surfaceKind } = opts;
-  const srcW = roomImage instanceof HTMLCanvasElement ? roomImage.width : roomImage.naturalWidth;
-  const srcH = roomImage instanceof HTMLCanvasElement ? roomImage.height : roomImage.naturalHeight;
-  if (!srcW || !srcH) throw new Error('Room image has no dimensions');
-
-  const scale = Math.min(1, (maxDimension ?? 1600) / Math.max(srcW, srcH));
-  const W = Math.max(1, Math.round(srcW * scale));
-  const H = Math.max(1, Math.round(srcH * scale));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) throw new Error('Canvas unavailable');
-  ctx.drawImage(roomImage, 0, 0, W, H);
-
-  const out = ctx.getImageData(0, 0, W, H);
-  const pixels = out.data;
-
-  const texW = texture instanceof HTMLCanvasElement ? texture.width : texture.naturalWidth;
-  const texH = texture instanceof HTMLCanvasElement ? texture.height : texture.naturalHeight;
-  if (!texW || !texH) return canvas;
-
-  const texCanvas = document.createElement('canvas');
-  texCanvas.width = texW;
-  texCanvas.height = texH;
-  const texCtx = texCanvas.getContext('2d', { willReadFrequently: true });
-  if (!texCtx) return canvas;
-  texCtx.drawImage(texture, 0, 0);
-  const texData = texCtx.getImageData(0, 0, texW, texH).data;
+export function renderSurfacePixels(input: RenderPixelsInput): void {
+  const { pixels, W, H, texData, texW, texH, polygon, params, pxPerMeter, scale, surfaceKind } = input;
 
   const poly = polygon.map((p) => ({ x: p.x * W, y: p.y * H }));
   const quad = fitQuad(poly);
   const h = homography(UNIT_SQUARE, quad);
-  if (!h) return canvas;
+  if (!h) return;
   const hi = homography(quad, UNIT_SQUARE);
-  if (!hi) return canvas;
+  if (!hi) return;
 
   const topW = dist(quad[0], quad[1]);
   const bottomW = dist(quad[3], quad[2]);
@@ -573,6 +563,46 @@ export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElem
       }
     }
   }
+
+}
+
+/**
+ * Renders the material onto the room image inside `polygon` as a realistic
+ * installation. Returns a new canvas; the inputs are not modified.
+ */
+export function renderSurfaceTexture(opts: RenderSurfaceOptions): HTMLCanvasElement {
+  const { roomImage, polygon, texture, params, pxPerMeter, maxDimension, surfaceKind } = opts;
+  const srcW = roomImage instanceof HTMLCanvasElement ? roomImage.width : roomImage.naturalWidth;
+  const srcH = roomImage instanceof HTMLCanvasElement ? roomImage.height : roomImage.naturalHeight;
+  if (!srcW || !srcH) throw new Error('Room image has no dimensions');
+
+  const scale = Math.min(1, (maxDimension ?? 1600) / Math.max(srcW, srcH));
+  const W = Math.max(1, Math.round(srcW * scale));
+  const H = Math.max(1, Math.round(srcH * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.drawImage(roomImage, 0, 0, W, H);
+
+  const out = ctx.getImageData(0, 0, W, H);
+  const pixels = out.data;
+
+  const texW = texture instanceof HTMLCanvasElement ? texture.width : texture.naturalWidth;
+  const texH = texture instanceof HTMLCanvasElement ? texture.height : texture.naturalHeight;
+  if (!texW || !texH) return canvas;
+
+  const texCanvas = document.createElement('canvas');
+  texCanvas.width = texW;
+  texCanvas.height = texH;
+  const texCtx = texCanvas.getContext('2d', { willReadFrequently: true });
+  if (!texCtx) return canvas;
+  texCtx.drawImage(texture, 0, 0);
+  const texData = texCtx.getImageData(0, 0, texW, texH).data;
+
+  renderSurfacePixels({ pixels, W, H, texData, texW, texH, polygon, params, pxPerMeter, scale, surfaceKind });
 
   ctx.putImageData(out, 0, 0);
   return canvas;
